@@ -377,6 +377,10 @@ export const messages = {
   "plugin.localFolder": { en: "Local folder", zh: "本地文件夹" },
   "plugin.extracting": { en: "Extracting {name}…", zh: "正在解压 {name}……" },
   "plugin.invalidArchive": { en: "{name} is not a ZIP or tar.gz archive.", zh: "{name} 不是 ZIP 或 tar.gz 压缩包。" },
+  "plugin.filePickerFailed": {
+    en: "Could not open the file picker: {message}",
+    zh: "无法打开文件选择器：{message}",
+  },
   "plugin.marketplace": {
     en: "Marketplace \"{name}\". Only catalog entries pointing at folders inside this source can be installed directly; git/npm/archive sources are listed but not fetched.",
     zh: "市场“{name}”。只有指向此来源内文件夹的目录项可直接安装；git、npm 和压缩包来源会列出，但不会自动下载。",

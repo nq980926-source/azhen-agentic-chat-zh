@@ -112,27 +112,51 @@ export class InstallPluginModal extends Modal {
 
   /** Archive file picker: extract in-memory, then sniff + install. */
   private pickArchive(): void {
-    const input = document.createEl("input", { type: "file" });
-    input.type = "file";
-    input.accept = ".zip,.tar.gz,.tgz";
-    input.onchange = async () => {
-      const file = input.files?.[0];
-      if (!file) return;
-      this.setStatus(t("plugin.extracting", { name: file.name }), "working");
-      try {
-        const bytes = new Uint8Array(await file.arrayBuffer());
-        const kind = looksZip(bytes) ? "zip" : looksGzip(bytes) ? "tar.gz" : null;
-        if (!kind) {
-          this.setStatus(t("plugin.invalidArchive", { name: file.name }), "error");
+    let input: HTMLInputElement | null = null;
+    try {
+      // Android WebView only opens the system picker reliably for a file input
+      // attached to the modal's active document. A detached input can ignore
+      // click() silently. Keep it in the current modal so desktop popouts and
+      // mobile use the same owning document.
+      input = this.contentEl.createEl("input", {
+        type: "file",
+        cls: "agentic-chat-file-picker",
+        attr: { "aria-hidden": "true", tabindex: "-1" },
+      });
+      input.accept = ".zip,.tar.gz,.tgz";
+      const picker = input;
+      picker.onchange = async () => {
+        const file = picker.files?.[0];
+        if (!file) {
+          picker.remove();
           return;
         }
-        const tree = stripSingleTopLevelDir(extractArchive(bytes, kind));
-        await this.installTree(tree, file.name);
-      } catch (error) {
-        this.setStatus(error instanceof Error ? error.message : String(error), "error");
-      }
-    };
-    input.click();
+        picker.remove();
+        this.setStatus(t("plugin.extracting", { name: file.name }), "working");
+        try {
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          const kind = looksZip(bytes) ? "zip" : looksGzip(bytes) ? "tar.gz" : null;
+          if (!kind) {
+            this.setStatus(t("plugin.invalidArchive", { name: file.name }), "error");
+            return;
+          }
+          const tree = stripSingleTopLevelDir(extractArchive(bytes, kind));
+          await this.installTree(tree, file.name);
+        } catch (error) {
+          this.setStatus(error instanceof Error ? error.message : String(error), "error");
+        }
+      };
+      picker.addEventListener("cancel", () => picker.remove(), { once: true });
+      picker.click();
+    } catch (error) {
+      input?.remove();
+      this.setStatus(
+        t("plugin.filePickerFailed", {
+          message: error instanceof Error ? error.message : String(error),
+        }),
+        "error",
+      );
+    }
   }
 
   /** Sniff the tree; offer marketplace picks when the source is a catalog. */

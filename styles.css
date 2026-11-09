@@ -2356,6 +2356,18 @@ body.is-phone .agentic-chat-toolbar {
   gap: var(--size-2-1);
 }
 
+.agentic-chat-file-picker {
+  position: fixed;
+  left: -10000px;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  padding: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
 @container agentic-chat (max-width: 320px) {
   .agentic-chat-tabs-row {
     flex-wrap: wrap;
