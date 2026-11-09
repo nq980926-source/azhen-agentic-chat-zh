@@ -7,6 +7,10 @@ import {
   probeMcpServer,
 } from "../src/mcp/tools";
 import { createMcpServerSettings, type McpSettings } from "../src/mcp/settings";
+import {
+  AZHEN_KNOWLEDGE_ENABLED_TOOLS,
+  AZHEN_KNOWLEDGE_WRITE_TOOLS,
+} from "../src/agent/azhen-knowledge-policy";
 import type { ToolArtifactMetadata, ToolArtifactStoreLike, ToolArtifactWriteInput } from "../src/artifacts/tool-artifact-store";
 import type { WebFetcher, WebHttpRequest, WebHttpResponse } from "../src/tools/web-fetch";
 
@@ -201,6 +205,57 @@ describe("MCP tools", () => {
     expect(tools.map((tool) => tool.name)).toEqual(["mcp__docs__read_file", "mcp__docs__list_files"]);
     expect(tools.map((tool) => tool.name)).not.toContain("mcp__docs__write_file");
     expect(tools.map((tool) => tool.name)).not.toContain("mcp__docs__list_danger");
+  });
+
+  it("exposes exactly the seven approved Azhen Knowledge tools", async () => {
+    const extraTools = [
+      "search_files",
+      "search_content",
+      "read_files",
+      "browse_files",
+      "preview_file_change",
+      "commit_file_change",
+      "move_file",
+      "list_recovery_versions",
+      "preview_restore",
+      "restore_file",
+      "diagnose_core",
+      "append_feedback",
+      "read_feedback",
+      "update_feedback",
+      "stage_feedback_plan",
+      "confirm_feedback_plan",
+      "delete_feedback",
+    ];
+    const tools = await createMcpTools(
+      mcpSettings({
+        servers: [
+          createMcpServerSettings({
+            id: "plugin_knowledge_kn_d90e9d68823a",
+            name: "knowledge: knowledge",
+            url: "https://knowledge.example/mcp",
+            enabled: true,
+            enabledTools: [...AZHEN_KNOWLEDGE_ENABLED_TOOLS],
+          }),
+        ],
+      }),
+      queuedFetcher([
+        rpc(1, { protocolVersion: "2025-11-25" }),
+        { status: 202, text: "", headers: {} },
+        rpc(2, {
+          tools: [
+            ...AZHEN_KNOWLEDGE_ENABLED_TOOLS.map((name) => ({ name })),
+            ...extraTools.map((name) => ({ name })),
+          ],
+        }),
+      ]),
+    );
+
+    expect(tools).toHaveLength(7);
+    expect(tools.map((tool) => tool.name)).toEqual(
+      AZHEN_KNOWLEDGE_ENABLED_TOOLS.map((name) => `mcp__plugin_knowledge_kn_d90e9d68823a__${name}`),
+    );
+    expect(AZHEN_KNOWLEDGE_WRITE_TOOLS).toHaveLength(5);
   });
 
   it("probe respects deny-wins and allowlist filtering with diagnostics names", async () => {

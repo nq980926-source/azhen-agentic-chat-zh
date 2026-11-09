@@ -8,6 +8,10 @@ import {
   type FileCheckpoint,
 } from "./file-checkpoints";
 import { type ApprovalPolicy, getPerToolApproval } from "./approval";
+import {
+  AZHEN_BUSINESS_SKILLS_PACKAGE,
+  hasConfiguredAzhenKnowledgeMcp,
+} from "./azhen-knowledge-policy";
 import { isMcpToolName, mcpServerIdFromToolName } from "../mcp/tools";
 import { MUTATING_TOOLS } from "../tools/tool-contracts";
 import {
@@ -20,8 +24,9 @@ import {
 import type { AgentRole } from "./subagents";
 import { findAgentRole } from "./subagents";
 import { resolveModePolicy } from "./modes";
-import { resolveWorkingDirPolicy, toolTargetPaths } from "./working-dir";
+import { isInsideWorkingDirs, resolveWorkingDirPolicy, toolTargetPaths } from "./working-dir";
 import { UNDOABLE_TOOLS, captureUndo } from "./undo";
+import { normalizeFolderPath } from "../vault/path";
 
 /** A pending tool call the user must approve. */
 export interface ToolApprovalRequest {
@@ -235,6 +240,18 @@ export class AgentToolCallController {
     signal?: AbortSignal,
   ): Promise<ToolGateDecision> {
     const settings = this.getSettings();
+    const knowledgeBoundaryReason = this.localKnowledgeMutationBoundaryReason(settings, toolName, args);
+    if (knowledgeBoundaryReason) {
+      await this.auditApproval({
+        decision: "denied",
+        toolCallId,
+        toolName,
+        label: this.labelForTool(toolName),
+        args,
+        reason: knowledgeBoundaryReason,
+      });
+      return { block: true, reason: knowledgeBoundaryReason };
+    }
     const modeDecision = resolveModePolicy(settings.mode, settings.approval, toolName);
     if (modeDecision.policy === "deny" && modeDecision.reason) {
       await this.auditApproval({ decision: "denied", toolCallId, toolName, label: this.labelForTool(toolName), args, reason: modeDecision.reason });
@@ -290,6 +307,31 @@ export class AgentToolCallController {
       signal,
     );
     return this.decisionForChoice(choice, "The user declined this action.");
+  }
+
+  /**
+   * When Azhen's Knowledge MCP is active, local Vault mutations are only a
+   * Skills-maintenance surface. Knowledge-body writes must use the MCP path so
+   * they retain approval, expected-hash checks, backups and operation receipts.
+   * This is a hard boundary, not a mode or approval-policy refinement.
+   */
+  private localKnowledgeMutationBoundaryReason(
+    settings: AgenticChatSettings,
+    toolName: string,
+    args: unknown,
+  ): string | undefined {
+    if (!MUTATING_TOOLS.has(toolName) || !hasConfiguredAzhenKnowledgeMcp(settings)) return undefined;
+    const allowedRoot = normalizeFolderPath(
+      `${settings.plugins.folder}/${AZHEN_BUSINESS_SKILLS_PACKAGE}`,
+    );
+    const targets = toolTargetPaths(args);
+    if (targets.length > 0 && targets.every((target) => isInsideWorkingDirs(target, [allowedRoot]))) {
+      return undefined;
+    }
+    return (
+      `Local Vault mutations are restricted to ${allowedRoot} for business Skills maintenance. ` +
+      "Knowledge-base content must be changed through Knowledge MCP."
+    );
   }
 
   private async gateMcpToolCall(

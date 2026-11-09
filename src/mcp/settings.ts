@@ -91,6 +91,8 @@ export interface McpServerState {
   /** Last OAuth challenge; kept in the state map so a redraw or reload can show the banner until authentication succeeds. */
   pendingOAuthChallenge?: string;
   pendingOAuthResourceUrl?: string;
+  /** One-time Azhen Knowledge write-policy migration marker. */
+  azhenKnowledgeWritePolicy?: 1;
 }
 
 export interface McpKnownToolSettings {
@@ -283,6 +285,7 @@ export function healMcpServerState(
     ...(typeof record?.pendingOAuthResourceUrl === "string" && record.pendingOAuthResourceUrl.trim()
       ? { pendingOAuthResourceUrl: record.pendingOAuthResourceUrl.trim() }
       : {}),
+    ...(record?.azhenKnowledgeWritePolicy === 1 ? { azhenKnowledgeWritePolicy: 1 } : {}),
   };
 }
 
@@ -305,6 +308,7 @@ export function createMcpServerState(id: string, overrides: Partial<McpServerSta
     ...(typeof overrides.pendingOAuthResourceUrl === "string" && overrides.pendingOAuthResourceUrl.trim()
       ? { pendingOAuthResourceUrl: overrides.pendingOAuthResourceUrl.trim() }
       : {}),
+    ...(raw.azhenKnowledgeWritePolicy === 1 ? { azhenKnowledgeWritePolicy: 1 } : {}),
     enabledTools: healMcpToolGlobs(raw.enabledTools ?? raw.enabled_tools),
     disabledTools: healMcpToolGlobs(raw.disabledTools ?? raw.disabled_tools),
   };

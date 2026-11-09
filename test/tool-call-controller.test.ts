@@ -12,7 +12,13 @@ import {
 import { SubagentRegistry } from "../src/tools/subagent-tool";
 import type { AgentRole } from "../src/agent/subagents";
 import { DEFAULT_SETTINGS, type AgenticChatSettings } from "../src/settings";
-import { createMcpServerSettings } from "../src/mcp/settings";
+import { createMcpServerSettings, createMcpServerState } from "../src/mcp/settings";
+import {
+  AZHEN_KNOWLEDGE_ENABLED_TOOLS,
+  AZHEN_KNOWLEDGE_WRITE_TOOLS,
+  azhenKnowledgeMcpLocalToolName,
+} from "../src/agent/azhen-knowledge-policy";
+import { pluginMcpServerId } from "../src/plugins/loader";
 import { FakeVault } from "./helpers/fake-vault";
 
 function makeController(
@@ -563,5 +569,170 @@ describe("AgentToolCallController", () => {
     });
     expect(decision).toBeUndefined();
     expect(requests).toHaveLength(1);
+  });
+
+  it("blocks local knowledge-body mutations in Safe and YOLO before approval", async () => {
+    const serverId = pluginMcpServerId("knowledge", "knowledge");
+    const knowledgeSettings: Partial<AgenticChatSettings> = {
+      mcp: {
+        enabled: true,
+        proxyUrl: "",
+        noProxy: "localhost,127.0.0.1,::1",
+        servers: [],
+      },
+      plugins: {
+        ...DEFAULT_SETTINGS.plugins,
+        mcpState: {
+          [serverId]: createMcpServerState(serverId, {
+            approval: "ask",
+            enabled: true,
+            enabledTools: [...AZHEN_KNOWLEDGE_ENABLED_TOOLS],
+          }),
+        },
+      },
+    };
+
+    const mutations = [
+      ["write", { path: "生活/日记/2026.11/9.md", content: "blocked" }],
+      ["edit", { path: "生活/日记/2026.11/9.md", oldText: "a", newText: "b" }],
+      ["delete", { path: "生活/日记/2026.11/9.md" }],
+      ["rename", { path: "生活/日记/2026.11/9.md", newPath: "生活/日记/renamed.md" }],
+      ["set_properties", { path: "生活/日记/2026.11/9.md", properties: { status: "draft" } }],
+    ] as const;
+
+    for (const mode of ["safe", "yolo"] as const) {
+      for (const mcpEnabled of [true, false]) {
+        const { controller, requests } = makeController({
+          settings: {
+            ...knowledgeSettings,
+            mode,
+            mcp: { ...knowledgeSettings.mcp!, enabled: mcpEnabled },
+            approval: { mutating: "allow", perTool: {}, workingDirs: [] },
+          },
+        });
+        for (const [name, args] of mutations) {
+          const decision = await controller.beforeToolCall({
+            toolCall: { id: `call-${mode}-${mcpEnabled}-${name}`, name },
+            args,
+          });
+          expect(decision).toEqual({ block: true, reason: expect.stringContaining("Knowledge MCP") });
+        }
+        expect(requests).toEqual([]);
+      }
+    }
+  });
+
+  it("allows business Skills mutations through the existing approval gate", async () => {
+    const serverId = pluginMcpServerId("knowledge", "knowledge");
+    const { controller, requests } = makeController({
+      settings: {
+        mcp: {
+          enabled: true,
+          proxyUrl: "",
+          noProxy: "localhost,127.0.0.1,::1",
+          servers: [],
+        },
+        plugins: {
+          ...DEFAULT_SETTINGS.plugins,
+          mcpState: {
+            [serverId]: createMcpServerState(serverId, {
+              approval: "ask",
+              enabled: true,
+            }),
+          },
+        },
+        mode: "safe",
+        approval: { mutating: "ask", perTool: {}, workingDirs: [] },
+      },
+      confirmToolCall: async () => ({ approved: true, remember: false }),
+    });
+
+    const decision = await controller.beforeToolCall({
+      toolCall: { id: "call-skill", name: "edit" },
+      args: {
+        path: "./.agentic-plugins/azhen-business-skills/skills/阿斟财务/SKILL.md",
+        oldText: "a",
+        newText: "b",
+      },
+    });
+
+    expect(decision).toBeUndefined();
+    expect(requests).toHaveLength(1);
+  });
+
+  it("blocks rename across the business Skills boundary and sibling-prefix confusion", async () => {
+    const serverId = pluginMcpServerId("knowledge", "knowledge");
+    const { controller } = makeController({
+      settings: {
+        mcp: { enabled: true, proxyUrl: "", noProxy: "", servers: [] },
+        plugins: {
+          ...DEFAULT_SETTINGS.plugins,
+          mcpState: {
+            [serverId]: createMcpServerState(serverId, {
+              enabled: true,
+              approval: "ask",
+            }),
+          },
+        },
+        mode: "yolo",
+        approval: { mutating: "allow", perTool: {}, workingDirs: [] },
+      },
+    });
+
+    for (const args of [
+      {
+        path: ".agentic-plugins/azhen-business-skills/skills/a.md",
+        newPath: "生活/a.md",
+      },
+      {
+        path: ".agentic-plugins/azhen-business-skills-evil/a.md",
+      },
+      {
+        path: "生活\\日记\\a.md",
+      },
+    ]) {
+      const decision = await controller.beforeToolCall({
+        toolCall: { id: `call-${Object.keys(args).join("-")}`, name: "rename" },
+        args,
+      });
+      expect(decision).toEqual({ block: true, reason: expect.stringContaining("Knowledge MCP") });
+    }
+  });
+
+  it("keeps all five Knowledge writes under per-tool ask even in YOLO", async () => {
+    const serverId = pluginMcpServerId("knowledge", "knowledge");
+    const perTool = Object.fromEntries(
+      AZHEN_KNOWLEDGE_WRITE_TOOLS.map((tool) => [azhenKnowledgeMcpLocalToolName(serverId, tool), "ask"]),
+    ) as Record<string, "ask">;
+    const tools = AZHEN_KNOWLEDGE_WRITE_TOOLS.map((tool) => ({
+      name: azhenKnowledgeMcpLocalToolName(serverId, tool),
+      label: `Knowledge: ${tool}`,
+    })) as AgentTool[];
+    const { controller, requests } = makeController({
+      settings: {
+        mcp: { enabled: true, proxyUrl: "", noProxy: "", servers: [] },
+        plugins: {
+          ...DEFAULT_SETTINGS.plugins,
+          mcpState: {
+            [serverId]: createMcpServerState(serverId, {
+              enabled: true,
+              approval: "ask",
+            }),
+          },
+        },
+        mode: "yolo",
+        approval: { mutating: "allow", perTool, workingDirs: [] },
+      },
+      tools,
+      confirmToolCall: async () => ({ approved: false, remember: false }),
+    });
+
+    for (const tool of tools) {
+      await controller.beforeToolCall({
+        toolCall: { id: `call-${tool.name}`, name: tool.name },
+        args: {},
+      });
+    }
+    expect(requests.map((request) => request.toolName)).toEqual(tools.map((tool) => tool.name));
   });
 });

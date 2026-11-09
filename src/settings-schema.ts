@@ -9,6 +9,7 @@ import {
 } from "./llm/models";
 import { healPerToolMap, type ApprovalSettings, DEFAULT_APPROVAL_SETTINGS } from "./agent/approval";
 import { normalizeWorkingDirs } from "./agent/working-dir";
+import { migrateAzhenKnowledgeMcpWritePolicy } from "./agent/azhen-knowledge-policy";
 import { type AgentMode, DEFAULT_MODE, healMode } from "./agent/modes";
 import { DEFAULT_OUTPUT_STYLE, type OutputStyle, OUTPUT_STYLES } from "./agent/output-styles";
 import { DEFAULT_SYSTEM_PROMPT } from "./agent/system-prompt";
@@ -220,6 +221,19 @@ export function mergeSettings(stored: Partial<AgenticChatSettings> | null | unde
   const healedMcp = healMcpSettings(stored?.mcp);
   const healedPlugins = healPluginSettings(stored?.plugins);
   migrateLegacyPluginServers(healedMcp, healedPlugins);
+  const healedApproval: ApprovalSettings = {
+    ...DEFAULT_SETTINGS.approval,
+    ...stored?.approval,
+    perTool: healPerToolMap(stored?.approval?.perTool),
+    // Heal the granted working dirs to a string[] so a malformed persisted value
+    // can't break the gate. Also drop plugin-internal paths that would fail-open the boundary.
+    workingDirs: normalizeWorkingDirs(
+      Array.isArray(stored?.approval?.workingDirs)
+        ? stored.approval.workingDirs.filter((dir): dir is string => typeof dir === "string")
+        : [],
+    ),
+  };
+  migrateAzhenKnowledgeMcpWritePolicy(healedPlugins.mcpState, healedApproval);
   return {
     ...DEFAULT_SETTINGS,
     ...remaining,
@@ -239,18 +253,7 @@ export function mergeSettings(stored: Partial<AgenticChatSettings> | null | unde
     outputStyle:
       stored?.outputStyle && stored.outputStyle in OUTPUT_STYLES ? stored.outputStyle : DEFAULT_OUTPUT_STYLE,
     privacy: { ...DEFAULT_SETTINGS.privacy, ...(stored?.privacy ?? {}) },
-    approval: {
-      ...DEFAULT_SETTINGS.approval,
-      ...stored?.approval,
-      perTool: healPerToolMap(stored?.approval?.perTool),
-      // Heal the granted working dirs to a string[] so a malformed persisted value
-      // can't break the gate. Also drop plugin-internal paths that would fail-open the boundary.
-      workingDirs: normalizeWorkingDirs(
-        Array.isArray(stored?.approval?.workingDirs)
-          ? stored.approval.workingDirs.filter((dir): dir is string => typeof dir === "string")
-          : [],
-      ),
-    },
+    approval: healedApproval,
     notifications: { ...DEFAULT_SETTINGS.notifications, ...stored?.notifications },
     compaction: { ...DEFAULT_SETTINGS.compaction, ...stored?.compaction },
     toolBudget: healToolBudgetSettings(stored?.toolBudget),

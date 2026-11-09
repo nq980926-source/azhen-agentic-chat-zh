@@ -9,6 +9,7 @@
 - OAuth discovery, dynamic client registration, PKCE, desktop loopback callback,
   mobile Obsidian protocol callback, token refresh.
 - Tool allowlist/denylist and per-tool approvals.
+- One-time Azhen Knowledge recovery to seven tools with per-tool write approvals.
 - Plugin-provided MCP servers, imported disabled by default.
 - Install plugin from archive URL, vault folder, or marketplace list.
 - Runtime tool discovery and calls with `mcp__<server>__<tool>` names.
@@ -66,6 +67,7 @@ await clickMcpAddButton("Add MCP server");
 | Test connection / refresh tools | `src/settings.ts:1259` | `test/mcp-tools.test.ts:229` (probe helper only) | `partial` |
 | Tool allowlist/denylist | `src/settings.ts:1395` | `test/mcp-tools.test.ts:174` (unit only) | `partial` |
 | Per-tool MCP approvals | `src/settings.ts:1448` | no committed check | `NONE` |
+| Azhen Knowledge write tools and YOLO-safe approvals | `src/agent/azhen-knowledge-policy.ts:78`; `src/settings-schema.ts:236` | `test/azhen-knowledge-policy.test.ts:65`; `test/tool-call-controller.test.ts:702` (unit only) | `partial` |
 | Setup guide / Copy config | `src/settings.ts:1940` | `test/e2e/specs/settings-ui.e2e.ts:268` (button existence only) | `partial` |
 | Composio bundle: 2 skills + 1 MCP | `src/plugins/import/install.ts:49` | `test/e2e/specs/composio-install.e2e.ts:27` | `covered` |
 | Imported MCP servers start disabled | `src/plugins/loader.ts:322` | `test/e2e/specs/settings-ui.e2e.ts:311` | `covered` |

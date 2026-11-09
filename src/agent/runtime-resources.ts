@@ -30,6 +30,10 @@ import { createFileSystemDenyMatcher } from "../vault/file-system-sandbox";
 import type { ReadMemo } from "../vault/read-memo";
 import { formatInstructionsOverlay, loadVaultInstructions } from "./instructions";
 import {
+  AZHEN_KNOWLEDGE_PROMPT_OVERLAY,
+  hasEnabledAzhenKnowledgeMcp,
+} from "./azhen-knowledge-policy";
+import {
   type AgentRole,
   formatAgentRolesForSystemPrompt,
   loadAgentRoles,
@@ -137,6 +141,7 @@ export function composeAgentSystemPrompt(
 ): string {
   const overlays = [
     selfAwarenessOverlay,
+    hasEnabledAzhenKnowledgeMcp(settings) ? AZHEN_KNOWLEDGE_PROMPT_OVERLAY : "",
     longTermMemoryOverlay ?? "",
     resources.instructionsOverlay,
     MODES[settings.mode].promptOverlay,

@@ -15,6 +15,7 @@ import type { ToolArtifactStoreLike } from "../src/artifacts/tool-artifact-store
 import type { WebFetcher } from "../src/tools/web-fetch";
 import { createMcpServerSettings, createMcpServerState } from "../src/mcp/settings";
 import { pluginMcpServerId } from "../src/plugins/loader";
+import { AZHEN_KNOWLEDGE_PROMPT_OVERLAY } from "../src/agent/azhen-knowledge-policy";
 import { FakeApp } from "./helpers/fake-vault";
 
 /** A persisted, user-enabled record for the seeded mcp-server plugin. */
@@ -187,6 +188,49 @@ describe("agent runtime resources", () => {
       ],
     };
     expect(composeAgentSystemPrompt(settings(), resources, "")).toContain("SECURITY BOUNDARY");
+  });
+
+  it("appends Knowledge MCP write rules even when the user has a custom system prompt", () => {
+    const serverId = pluginMcpServerId("knowledge", "knowledge");
+    const prompt = composeAgentSystemPrompt(
+      settings({
+        systemPrompt: "Custom user prompt.",
+        mcp: { enabled: true, proxyUrl: "", noProxy: "", servers: [] },
+        plugins: {
+          ...DEFAULT_SETTINGS.plugins,
+          mcpState: {
+            [serverId]: createMcpServerState(serverId, { enabled: true, approval: "ask" }),
+          },
+        },
+      }),
+      EMPTY_AGENT_RUNTIME_RESOURCES,
+      "",
+    );
+
+    expect(prompt).toContain("Custom user prompt.");
+    expect(prompt).toContain(AZHEN_KNOWLEDGE_PROMPT_OVERLAY);
+    expect(prompt).toContain("edit_file");
+    expect(prompt).toContain("move_to_trash");
+    expect(prompt).toContain("local Vault");
+  });
+
+  it("does not inject Knowledge MCP rules while the Knowledge server is disabled", () => {
+    const serverId = pluginMcpServerId("knowledge", "knowledge");
+    const prompt = composeAgentSystemPrompt(
+      settings({
+        mcp: { enabled: true, proxyUrl: "", noProxy: "", servers: [] },
+        plugins: {
+          ...DEFAULT_SETTINGS.plugins,
+          mcpState: {
+            [serverId]: createMcpServerState(serverId, { enabled: false, approval: "ask" }),
+          },
+        },
+      }),
+      EMPTY_AGENT_RUNTIME_RESOURCES,
+      "",
+    );
+
+    expect(prompt).not.toContain(AZHEN_KNOWLEDGE_PROMPT_OVERLAY);
   });
 
   it("builds parent tools from the loaded resource snapshot", () => {
