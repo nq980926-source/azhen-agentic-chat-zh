@@ -2285,6 +2285,17 @@
 
 /* Obsidian Mobile: use the phone-sized root tab for a normal chat-app reading
    rhythm. Desktop and narrow desktop panes keep their existing layout. */
+/* Obsidian's `.view-content` rule otherwise wins over the base chat rule here:
+   it adds scrolling and padding to the root, which lets Android pan the focused
+   composer instead of keeping the transcript as the only scroll container. */
+body.is-phone .view-content.agentic-chat-view {
+  height: var(--agentic-chat-visual-height, 100%);
+  max-height: var(--agentic-chat-visual-height, 100%);
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
 body.is-phone .agentic-chat-messages {
   gap: var(--size-2-3);
   padding: var(--size-2-3) var(--size-4-2);
@@ -2324,8 +2335,19 @@ body.is-phone .agentic-chat-step {
 }
 
 body.is-phone .agentic-chat-composer {
+  --agentic-chat-mobile-bottom-clearance: calc(
+    var(--mobile-toolbar-height, 0px) +
+    var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px))
+  );
   gap: var(--size-2-1);
-  padding: var(--size-2-2) var(--size-2-3) calc(var(--size-4-2) + env(safe-area-inset-bottom, 0px));
+  padding:
+    var(--size-2-2)
+    var(--size-2-3)
+    calc(var(--size-4-2) + var(--agentic-chat-mobile-bottom-clearance));
+}
+
+body.is-phone .agentic-chat-view.is-android-viewport-synced .agentic-chat-composer {
+  --agentic-chat-mobile-bottom-clearance: var(--agentic-chat-android-bottom-clearance, 0px);
 }
 
 body.is-phone .agentic-chat-field {
@@ -2337,7 +2359,7 @@ body.is-phone .agentic-chat-field {
 body.is-phone .agentic-chat-input {
   height: var(--agentic-chat-input-height, auto);
   min-height: 40px;
-  max-height: min(28vh, 160px);
+  max-height: var(--agentic-chat-mobile-input-max-height, 112px);
   padding-top: var(--size-2-1);
   resize: none;
   line-height: 1.4;
@@ -2353,7 +2375,45 @@ body.is-phone .agentic-chat-tabs-row {
 }
 
 body.is-phone .agentic-chat-toolbar {
+  flex-wrap: nowrap;
   gap: var(--size-2-1);
+}
+
+body.is-phone .agentic-chat-toolbar-left {
+  flex: 1 1 auto;
+  flex-wrap: nowrap;
+  max-width: none;
+}
+
+body.is-phone .agentic-chat-toolbar-right {
+  flex: 0 1 auto;
+  flex-wrap: nowrap;
+  gap: var(--size-2-1);
+  margin-left: 0;
+  max-width: none;
+  justify-content: flex-end;
+}
+
+body.is-phone .agentic-chat-model {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+body.is-phone .agentic-chat-model-pill {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+body.is-phone .agentic-chat-mode-toggle {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+}
+
+body.is-phone .agentic-chat-send,
+body.is-phone .agentic-chat-stop {
+  min-height: 36px;
+  height: 36px;
+  padding: 3px 10px;
 }
 
 .agentic-chat-file-picker {
