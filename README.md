@@ -1,6 +1,6 @@
 # 阿斟 · Agentic Chat 简体中文汉化版
 
-这是 Obsidian 插件 [Agentic Chat](https://github.com/tardigrde/obsidian-agentic-chat) 的**非官方简体中文汉化构建**，保留阿斟 Memory 聊天联动、Knowledge MCP、模型设置、工具审批和聊天历史能力。当前正式版本为 **0.51.12**，Windows 与 Android 使用同一组插件文件。
+这是 Obsidian 插件 [Agentic Chat](https://github.com/tardigrde/obsidian-agentic-chat) 的**非官方简体中文汉化构建**，保留阿斟 Memory 聊天联动、Knowledge MCP、模型设置、工具审批和聊天历史能力。当前正式版本为 **0.51.13**，Windows 与 Android 使用同一组插件文件。
 
 > 本项目并非 Agentic Chat 官方版本，与原作者无官方隶属关系。原项目作者为 [tardigrde](https://github.com/tardigrde)。
 
@@ -12,6 +12,7 @@
 - 不汉化模型 ID、MCP 协议字段、工具调用参数、Slash 命令标识、用户笔记内容及模型回答。
 - Android 端在 Obsidian 主工作区使用全宽聊天 Tab，并优先在启动时打开聊天。
 - 手机输入框默认紧凑，多行草稿自动增高；长表格只在自身区域横向滚动。
+- Android「安装插件 → 压缩包文件」现在使用挂载在当前 Modal 中的文件输入，可正常打开系统文件选择器。
 - 桌面端继续使用原有右侧栏布局和操作习惯。
 
 ## 安装
@@ -36,13 +37,13 @@
 
 ## 兼容与更新
 
-- 插件版本：`0.51.12`
+- 插件版本：`0.51.13`
 - 最低 Obsidian 版本：`1.11.4`
 - 同一个仓库中，汉化版与原版不能作为两个不同插件并存（两者 ID 相同）。
 - 安装后不要删除原有 `data.json`、`sessions/`、`artifacts/` 等数据。
 - 更新自定义汉化版时，注意避免社区插件更新将它覆盖。
 
-0.51.12 的正式构建通过类型检查、Lint、1759 项单元测试、生产构建和移动兼容静态检查。Android 真机 UI 和桌面端实际 E2E 尚未完成，用户接受在实际使用中继续验收。
+0.51.13 的正式构建通过类型检查、Lint、与 ZIP 导入直接相关的 82 项测试、生产构建和移动兼容静态检查。此前 0.51.12 已通过 1759 项单元测试。Android 真实系统文件选择器仍需在手机安装后验收。
 
 ## 原项目、许可与致谢
 
