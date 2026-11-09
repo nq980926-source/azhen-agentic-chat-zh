@@ -2283,6 +2283,79 @@
   }
 }
 
+/* Obsidian Mobile: use the phone-sized root tab for a normal chat-app reading
+   rhythm. Desktop and narrow desktop panes keep their existing layout. */
+body.is-phone .agentic-chat-messages {
+  gap: var(--size-2-3);
+  padding: var(--size-2-3) var(--size-4-2);
+}
+
+body.is-phone .agentic-chat-user {
+  max-width: 92%;
+  padding: var(--size-2-3) var(--size-4-2);
+  border-radius: 14px;
+}
+
+body.is-phone .agentic-chat-assistant {
+  padding: var(--size-2-3) var(--size-4-2);
+  border-radius: 12px;
+}
+
+body.is-phone .agentic-chat-text {
+  font-size: var(--font-ui-medium);
+  line-height: 1.45;
+}
+
+body.is-phone .agentic-chat-text table {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+body.is-phone .agentic-chat-text pre {
+  padding: var(--size-2-3);
+}
+
+body.is-phone .agentic-chat-step {
+  margin-top: var(--size-2-1);
+  padding: var(--size-2-2);
+}
+
+body.is-phone .agentic-chat-composer {
+  gap: var(--size-2-1);
+  padding: var(--size-2-2) var(--size-2-3) calc(var(--size-4-2) + env(safe-area-inset-bottom, 0px));
+}
+
+body.is-phone .agentic-chat-field {
+  min-height: 0;
+  gap: var(--size-2-1);
+  padding: var(--size-2-2) var(--size-2-3);
+}
+
+body.is-phone .agentic-chat-input {
+  height: var(--agentic-chat-input-height, auto);
+  min-height: 40px;
+  max-height: min(28vh, 160px);
+  padding-top: var(--size-2-1);
+  resize: none;
+  line-height: 1.4;
+  overflow-y: hidden;
+}
+
+body.is-phone .agentic-chat-input.is-scrollable {
+  overflow-y: auto;
+}
+
+body.is-phone .agentic-chat-tabs-row {
+  gap: var(--size-2-1);
+}
+
+body.is-phone .agentic-chat-toolbar {
+  gap: var(--size-2-1);
+}
+
 @container agentic-chat (max-width: 320px) {
   .agentic-chat-tabs-row {
     flex-wrap: wrap;
@@ -2291,4 +2364,8 @@
   .agentic-chat-field {
     min-height: 88px;
   }
+}
+
+body.is-phone .agentic-chat-field {
+  min-height: 0;
 }

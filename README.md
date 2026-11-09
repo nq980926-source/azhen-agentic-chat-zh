@@ -1,6 +1,6 @@
 # 阿斟 · Agentic Chat 简体中文汉化版
 
-这是 Obsidian 插件 [Agentic Chat](https://github.com/tardigrde/obsidian-agentic-chat) 的**非官方简体中文汉化构建**。基于上游 **0.51.10** 版本，面向 Windows 与 Android 的 Obsidian 使用。
+这是 Obsidian 插件 [Agentic Chat](https://github.com/tardigrde/obsidian-agentic-chat) 的**非官方简体中文汉化构建**，保留阿斟 Memory 聊天联动、Knowledge MCP、模型设置、工具审批和聊天历史能力。当前正式版本为 **0.51.12**，Windows 与 Android 使用同一组插件文件。
 
 > 本项目并非 Agentic Chat 官方版本，与原作者无官方隶属关系。原项目作者为 [tardigrde](https://github.com/tardigrde)。
 
@@ -8,20 +8,23 @@
 
 - 汉化聊天界面、设置、按钮、常用提示、会话和部分工具状态。
 - 简体中文环境显示中文；其他语言使用英文回退。
-- 保留原版 Agentic Chat 的插件 ID `agentic-chat`、版本号 `0.51.10` 和内部协议标识。
+- 保留原版 Agentic Chat 的插件 ID `agentic-chat` 和内部协议标识。
 - 不汉化模型 ID、MCP 协议字段、工具调用参数、Slash 命令标识、用户笔记内容及模型回答。
+- Android 端在 Obsidian 主工作区使用全宽聊天 Tab，并优先在启动时打开聊天。
+- 手机输入框默认紧凑，多行草稿自动增高；长表格只在自身区域横向滚动。
+- 桌面端继续使用原有右侧栏布局和操作习惯。
 
 ## 安装
 
-### 使用 BRAT（需要本仓库已有 GitHub Release）
+### 使用 BRAT
 
 1. 在 Obsidian 的「第三方插件」中安装并启用 [BRAT](https://github.com/TfTHacker/obsidian42-brat)。
 2. 在 BRAT 中选择添加 Beta 插件，输入本仓库地址：`nq980926-source/azhen-agentic-chat-zh`。
 3. 安装并启用 Agentic Chat，将 Obsidian 的语言设置为简体中文。
 
-**注意：** 仓库需要发布一个包含 `main.js`、`manifest.json`、`styles.css` 三个**独立附件**的 GitHub Release，供 BRAT 获取；只把 ZIP 作为 Release 附件不够。
+每次正式 Release 都包含 `main.js`、`manifest.json`、`styles.css` 三个独立附件。BRAT 会读取仓库根目录的 `versions.json` 并下载对应版本资产。
 
-### 手动安装（测试仓库优先）
+### 手动安装
 
 把 `main.js`、`manifest.json` 和 `styles.css` 三个文件放在 Obsidian 测试仓库的：
 
@@ -29,19 +32,17 @@
 <你的仓库>/.obsidian/plugins/agentic-chat/
 ```
 
-重启 Obsidian，在「第三方插件」中启用 Agentic Chat。Windows 与 Android 使用相同的插件文件。
-
-在安卓端请先使用**独立测试仓库**，不要覆盖目前已验证可用的原版插件。
+重启 Obsidian，在「第三方插件」中启用 Agentic Chat。升级时只替换上述三个文件，保留原有 `data.json`、`sessions/`、`artifacts/` 与 SecretStorage。
 
 ## 兼容与更新
 
-- 插件版本：`0.51.10`
+- 插件版本：`0.51.12`
 - 最低 Obsidian 版本：`1.11.4`
 - 同一个仓库中，汉化版与原版不能作为两个不同插件并存（两者 ID 相同）。
 - 安装后不要删除原有 `data.json`、`sessions/`、`artifacts/` 等数据。
 - 更新自定义汉化版时，注意避免社区插件更新将它覆盖。
 
-汉化实施报告显示：类型检查、Lint、自动测试、生产构建和移动兼容静态检查通过。**真实 Windows / Android 图形界面与实际设备兼容性仍需验证。**
+0.51.12 的正式构建通过类型检查、Lint、1759 项单元测试、生产构建和移动兼容静态检查。Android 真机 UI 和桌面端实际 E2E 尚未完成，用户接受在实际使用中继续验收。
 
 ## 原项目、许可与致谢
 
@@ -58,6 +59,7 @@
 - `main.js`：插件构建代码
 - `manifest.json`：Obsidian 插件信息
 - `styles.css`：插件样式
+- `versions.json`：BRAT 使用的版本与最低 Obsidian 版本映射
 - `LICENSE`：上游 MIT 许可证
 - `THIRD_PARTY_NOTICES.md`：上游第三方依赖与来源说明
 
