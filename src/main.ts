@@ -1,0 +1,362 @@
+import {
+  Plugin,
+  Notice,
+  TFile,
+  TFolder,
+  WorkspaceLeaf,
+  type Editor,
+  type MarkdownFileInfo,
+  type MarkdownView,
+  type Menu,
+  type TAbstractFile,
+} from "obsidian";
+import { t } from "./i18n";
+import { VIEW_TYPE_AGENT_CHAT } from "./constants";
+import {
+  AgenticChatSettingTab,
+  type AgenticChatSettings,
+  DEFAULT_SETTINGS,
+  mergeSettings,
+} from "./settings";
+import { AgentService, type ToolApprovalRequest } from "./agent/agent-service";
+import type { UserApprovalChoice } from "./agent/tool-call-controller";
+import type { AskUserHandler } from "./tools/ask-user-tool";
+import { createWindowE2EStreamFn } from "./agent/e2e-stream";
+import { ToolArtifactStore } from "./artifacts/tool-artifact-store";
+import {
+  MCP_OAUTH_OBSIDIAN_PROTOCOL_ACTION,
+  McpOAuthObsidianCallbackBridge,
+  type McpOAuthCallbackReceiver,
+} from "./mcp/oauth";
+import { ObsidianSessionManager } from "./session/session-manager";
+import { initPricingCache } from "./llm/pricing-cache";
+import { ApprovalModal } from "./ui/approval-modal";
+import { ChatView } from "./ui/chat-view";
+import { buildQuickAskTarget } from "./ui/quick-ask";
+import { QuickAskModal } from "./ui/quick-ask-modal";
+import { ObsidianSecretStore, hydrateSettingsSecrets, settingsForStorage } from "./secrets/secret-store";
+import { applyRememberedApprovalChoice } from "./agent/approval-memory";
+import { PluginService } from "./plugins/service";
+import { type AgentMode, resolveModeTransition, validateModeTransition } from "./agent/modes";
+import { setSemanticLeaseNamespace } from "./retrieval/semantic-index";
+
+declare const __AGENTIC_CHAT_ENABLE_E2E_STREAM__: boolean;
+
+export default class AgenticChatPlugin extends Plugin {
+  settings: AgenticChatSettings = DEFAULT_SETTINGS;
+  /** S4: single-source memory for plan restore — one value for all leaves, not per-view (Codex atomic override). */
+  modeBeforePlan: AgentMode | null = null;
+  private lastSyncedMode: AgentMode | null = null;
+  private secretStore!: ObsidianSecretStore;
+  private readonly mcpOAuthCallbacks = new McpOAuthObsidianCallbackBridge();
+  readonly pluginService = new PluginService(
+    this.app,
+    () => this.settings,
+    () => this.saveSettings(),
+  );
+
+  async onload(): Promise<void> {
+    this.secretStore = new ObsidianSecretStore(this.app);
+    await this.loadSettings();
+    // Scope the cross-window lease to this vault. Desktop uses the absolute
+    // base path, which is identical in every window and avoids a first-load id
+    // race. Mobile has one window; the generated id keeps same-named vaults
+    // apart.
+    if (!this.settings.embeddings.leaseId) {
+      this.settings.embeddings.leaseId =
+        typeof crypto.randomUUID === "function"
+          ? crypto.randomUUID()
+          : `vault-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+      await this.saveSettings();
+    }
+    const adapter = this.app.vault.adapter as { getBasePath?: () => string };
+    const basePath = adapter.getBasePath?.() ?? "";
+    setSemanticLeaseNamespace(basePath || this.settings.embeddings.leaseId);
+    // Recover an interrupted package install before any turn can load plugins:
+    // a retained backup must own the settings readers use.
+    try {
+      await this.pluginService.sweepImportStages();
+    } catch (error: unknown) {
+      console.warn("Agentic chat: could not sweep interrupted plugin imports", error);
+    }
+    initPricingCache(this.app, this);
+
+    // Materialize the plugin's own skills and the user's empty skill collection
+    // as editable Agent Plugins packages on first load (only when absent; never
+    // overwrites edits). Sequential: both share the parent plugins folder, and
+    // parallel ensures could race on its creation. Fire-and-forget: failures
+    // must not block plugin startup.
+    void (async () => {
+      try {
+        await this.pluginService.ensureBuiltinsMaterialized();
+      } catch (error: unknown) {
+        console.warn("Agentic chat: could not materialize built-in agent plugins", error);
+      }
+      try {
+        await this.pluginService.ensureMySkillsMaterialized();
+      } catch (error: unknown) {
+        console.warn("Agentic chat: could not materialize the user skill collection", error);
+      }
+    })();
+
+    this.registerView(VIEW_TYPE_AGENT_CHAT, (leaf) => new ChatView(leaf, this));
+    this.registerObsidianProtocolHandler(MCP_OAUTH_OBSIDIAN_PROTOCOL_ACTION, (params) => {
+      if (!this.mcpOAuthCallbacks.handleProtocolCallback(params)) {
+        new Notice(t("main.notice.oauthNoFlow"));
+      }
+    });
+
+    this.addRibbonIcon("messages-square", t("main.ribbon.open"), () => void this.activateView());
+
+    this.addCommand({
+      id: "open-chat",
+      name: t("main.command.open"),
+      callback: () => void this.activateView(),
+    });
+
+    this.addCommand({
+      id: "new-conversation",
+      name: t("main.command.new"),
+      callback: () => void this.runOnActiveView((view) => view.startNewConversation()),
+    });
+
+    this.addCommand({
+      id: "quick-ask-inline-edit",
+      name: t("main.command.quickAsk"),
+      editorCallback: (editor, info) => this.openQuickAskInlineEdit(editor, info),
+    });
+
+    this.registerContextMenus();
+    this.addSettingTab(new AgenticChatSettingTab(this.app, this));
+
+    // Vault edits touching the plugins folder invalidate the plugin cache so
+    // the settings tab and /doctor re-scan on the next render instead of
+    // showing a stale tree (external sync, hand-edited manifests).
+    const invalidateFor = (file: { path: string }) => this.pluginService.invalidateFor(file.path);
+    this.registerEvent(this.app.vault.on("modify", invalidateFor));
+    this.registerEvent(this.app.vault.on("create", invalidateFor));
+    this.registerEvent(this.app.vault.on("delete", invalidateFor));
+    this.registerEvent(this.app.vault.on("rename", invalidateFor));
+  }
+
+  /**
+   * Build a fresh agent service backed by its own session manager. The chat view
+   * creates one per tab so multiple conversations can run independently in a leaf.
+   */
+  createAgentService(options: {
+    askUser?: AskUserHandler;
+    confirmToolCall?: (request: ToolApprovalRequest, signal?: AbortSignal) => Promise<UserApprovalChoice>;
+  } = {}): AgentService {
+    const sessionManager = ObsidianSessionManager.forPlugin(this.app, this);
+    return new AgentService({
+      app: this.app,
+      getSettings: () => this.settings,
+      sessionManager,
+      confirmToolCall: options.confirmToolCall ?? ((request, signal) => this.confirmToolCall(request, signal)),
+      askUser: options.askUser,
+      streamFn: createWindowE2EStreamFn({ enabled: __AGENTIC_CHAT_ENABLE_E2E_STREAM__ }),
+      loopGuardDisabled: __AGENTIC_CHAT_ENABLE_E2E_STREAM__,
+      saveSettings: () => this.saveSettings(),
+      skillScaffolder: this.pluginService,
+      artifactStore: ToolArtifactStore.forPlugin(this.app, this, {
+        referencedArtifactIds: () => sessionManager.listReferencedArtifactIds(),
+      }),
+    });
+  }
+
+  createMcpOAuthCallbackReceiver(): McpOAuthCallbackReceiver {
+    return this.mcpOAuthCallbacks.createReceiver();
+  }
+
+  /** Reveal the chat view, then run `fn` against it (commands act on the active view). */
+  private async runOnActiveView(fn: (view: ChatView) => void | Promise<void>): Promise<void> {
+    await this.activateView();
+    const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_AGENT_CHAT)[0];
+    if (leaf?.view instanceof ChatView) await fn(leaf.view);
+  }
+
+  private registerContextMenus(): void {
+    this.registerEvent(
+      this.app.workspace.on("editor-menu", (menu, editor, info) => {
+        this.addEditorSelectionMenuItem(menu, editor, info);
+      }),
+    );
+    this.registerEvent(
+      this.app.workspace.on("file-menu", (menu, file) => {
+        this.addVaultEntryMenuItem(menu, [file]);
+      }),
+    );
+    this.registerEvent(
+      this.app.workspace.on("files-menu", (menu, files) => {
+        this.addVaultEntryMenuItem(menu, files);
+      }),
+    );
+  }
+
+  private addEditorSelectionMenuItem(
+    menu: Menu,
+    editor: Editor,
+    info: MarkdownView | MarkdownFileInfo,
+  ): void {
+    const selection = editor.getSelection().trim();
+    if (!selection) return;
+    const sourcePath = info.file?.path;
+    menu.addItem((item) =>
+      item
+        .setTitle(t("main.menu.sendSelection"))
+        .setIcon("messages-square")
+        .onClick(() => void this.runOnActiveView((view) => view.attachSelectionFromMenu(selection, sourcePath))),
+    );
+  }
+
+  private addVaultEntryMenuItem(menu: Menu, files: TAbstractFile[]): void {
+    const entries = files.filter((file): file is TFile | TFolder => file instanceof TFile || file instanceof TFolder);
+    if (entries.length === 0) return;
+    menu.addItem((item) =>
+      item
+        .setTitle(t(entries.length === 1 ? "main.menu.sendOne" : "main.menu.sendMany"))
+        .setIcon("messages-square")
+        .onClick(
+          () =>
+            void this.runOnActiveView((view) => {
+              for (const entry of entries) view.attachVaultEntryFromMenu(entry);
+            }),
+        ),
+    );
+  }
+
+  private openQuickAskInlineEdit(editor: Editor, info: MarkdownView | MarkdownFileInfo): void {
+    const target = buildQuickAskTarget(editor, info.file?.path);
+    if (target.text.length === 0 && target.kind === "line") {
+    new Notice(t("main.notice.noSelection"));
+      return;
+    }
+    new QuickAskModal(this.app, target, (proposal) => {
+      editor.replaceRange(proposal.replacement, proposal.target.from, proposal.target.to);
+    }).open();
+  }
+
+  /** Show the approval dialog and persist a remembered allow/deny choice after the user decides. */
+  private async confirmToolCall(request: ToolApprovalRequest, signal?: AbortSignal): Promise<UserApprovalChoice> {
+    const choice = await new ApprovalModal(this.app, request).ask(signal);
+    if (applyRememberedApprovalChoice(this.settings, request.toolName, choice)) {
+      await this.saveSettings();
+    }
+    return choice;
+  }
+
+  async activateView(): Promise<void> {
+    const { workspace } = this.app;
+    const existing = workspace.getLeavesOfType(VIEW_TYPE_AGENT_CHAT);
+    let leaf: WorkspaceLeaf | null = existing[0] ?? null;
+    if (!leaf) {
+      leaf = workspace.getRightLeaf(false);
+      if (!leaf) return;
+      await leaf.setViewState({ type: VIEW_TYPE_AGENT_CHAT, active: true });
+    }
+    await workspace.revealLeaf(leaf);
+    workspace.setActiveLeaf(leaf, { focus: true });
+  }
+
+  async loadSettings(): Promise<void> {
+    const stored = (await this.loadData()) as Partial<AgenticChatSettings> | null;
+    // Capture legacy skills/templates folder settings BEFORE the first save
+    // rewrites data.json in the new schema (mergeSettings drops those keys),
+    // so the one-time migration below can preserve the user's skills.
+    const legacySkillFolders = legacySkillFolderPaths(stored);
+    this.settings = mergeSettings(stored);
+    hydrateSettingsSecrets(this.settings, this.secretStore);
+    // S4: remember mode for broadcast guard; heals plan restore on restart
+    this.lastSyncedMode = this.settings.mode;
+    if (legacySkillFolders.length > 0) {
+      // Run the migration before persisting the new schema: if it fails we
+      // skip the save, so data.json keeps the legacy keys and the migration
+      // retries on the next load instead of permanently losing the user's
+      // skills. Bounded one-time cost, only for configured legacy folders.
+      const migrated = await this.tryMigrateLegacySkillFolders(legacySkillFolders);
+      if (!migrated) return;
+    }
+    await this.saveSettings();
+  }
+
+  /** Best-effort one-time migration of pre-plugins skills folders. Returns false when it failed and should be retried. */
+  private async tryMigrateLegacySkillFolders(folders: string[]): Promise<boolean> {
+    try {
+      const created = await this.pluginService.materializeLegacySkills(folders);
+      if (created) {
+        new Notice(t("main.notice.legacySkillsMigrated"));
+      }
+      return true;
+    } catch (error) {
+      console.warn("Agentic chat: could not migrate legacy skills folders", error);
+      return false;
+    }
+  }
+
+  async saveSettings(): Promise<void> {
+    await this.saveData(settingsForStorage(this.settings, this.secretStore));
+    // Only broadcast when mode actually changed — avoids repaint + notification side-effects on unrelated saves.
+    if (this.lastSyncedMode !== this.settings.mode) {
+      this.lastSyncedMode = this.settings.mode;
+      this.syncModeToViews();
+    }
+  }
+
+  /** S4: single-source mode — after any persisted mode change, push chrome to every chat leaf atomically (Codex ThreadSettingsOverrides pattern). */
+  private syncModeToViews(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_AGENT_CHAT)) {
+      if (leaf.view instanceof ChatView) leaf.view.refreshModeFromSettings();
+    }
+  }
+
+  /** Whether any chat view is currently streaming — used by the settings tab's atomic gate. */
+  isAnyViewStreaming(): boolean {
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE_AGENT_CHAT)) {
+      if (leaf.view instanceof ChatView && leaf.view.isStreaming()) return true;
+    }
+    return false;
+  }
+
+  /** S4: settings tab delegates to the active chat view so modeBeforePlan is handled atomically; falls back to direct mutate when no view is open. */
+  async requestModeChange(target: AgentMode): Promise<boolean> {
+    const activeView = this.app.workspace.getActiveViewOfType(ChatView);
+    if (activeView) {
+      const ok = await activeView.requestModeChange(target);
+      if (!ok) {
+        const blocked = validateModeTransition(
+          this.settings.mode,
+          target,
+          this.isAnyViewStreaming(),
+          this.modeBeforePlan,
+        );
+        if (blocked) new Notice(blocked);
+      }
+      return ok;
+    }
+    // No active view — mutate directly with the same validation as ChatView.
+    const blocked = validateModeTransition(this.settings.mode, target, this.isAnyViewStreaming(), this.modeBeforePlan);
+    if (blocked) {
+      new Notice(blocked);
+      return false;
+    }
+    if (this.settings.mode === target) return false;
+    const transition = resolveModeTransition(this.settings.mode, target, this.modeBeforePlan);
+    if (!transition) return false;
+    this.settings.mode = transition.nextMode;
+    this.modeBeforePlan = transition.nextPrevious;
+    await this.saveSettings();
+    return true;
+  }
+}
+
+/** Raw legacy skills/templates folder values from pre-plugins stored settings. */
+function legacySkillFolderPaths(stored: Partial<AgenticChatSettings> | null | undefined): string[] {
+  if (!stored || typeof stored !== "object") return [];
+  const raw = stored as unknown as Record<string, unknown>;
+  const folders: string[] = [];
+  for (const key of ["skillsFolder", "templatesFolder"]) {
+    const value = raw[key];
+    if (typeof value === "string" && value.trim()) folders.push(value.trim());
+  }
+  return folders;
+}

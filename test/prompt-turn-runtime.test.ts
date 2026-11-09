@@ -1,0 +1,152 @@
+import { describe, expect, it } from "vitest";
+import type { Agent } from "@earendil-works/pi-agent-core";
+import { AgentPromptTurnRuntime } from "../src/agent/prompt-turn-runtime";
+import { DEFAULT_SETTINGS, type AgenticChatSettings } from "../src/settings";
+
+interface Harness {
+  runtime: AgentPromptTurnRuntime;
+  agent: Agent;
+  events: string[];
+}
+
+function harness(overrides: {
+  settings?: Partial<AgenticChatSettings>;
+  hasApiKey?: boolean;
+  isStreaming?: boolean;
+  sessionCostUsd?: number;
+  refreshConfiguration?: () => Promise<void>;
+  onTurnStart?: () => void;
+} = {}): Harness {
+  const settings: AgenticChatSettings = {
+    ...DEFAULT_SETTINGS,
+    ...overrides.settings,
+    notifications: {
+      ...DEFAULT_SETTINGS.notifications,
+      ...(overrides.settings?.notifications ?? {}),
+    },
+  };
+  const events: string[] = [];
+  const agent = { state: { isStreaming: overrides.isStreaming ?? false } } as Agent;
+  const runtime = new AgentPromptTurnRuntime({
+    requireAgent: () => agent,
+    getSettings: () => settings,
+    hasApiKey: () => overrides.hasApiKey ?? true,
+    getSessionCostUsd: () => overrides.sessionCostUsd ?? 0,
+    refreshConfiguration: async () => {
+      if (overrides.refreshConfiguration) {
+        await overrides.refreshConfiguration();
+        return;
+      }
+      events.push("refresh");
+    },
+    maybeCompact: async () => {
+      events.push("compact");
+    },
+    onTurnStart: overrides.onTurnStart,
+    clearError: () => {
+      events.push("clear-error");
+    },
+    setError: (error) => {
+      events.push(`set-error:${error instanceof Error ? error.message : String(error)}`);
+    },
+    setErrorMessage: (message) => {
+      events.push(`set-error-message:${message}`);
+    },
+    consumeOverrides: () => {
+      events.push("consume-overrides");
+    },
+    notifyChange: () => {
+      events.push("notify");
+    },
+  });
+  return { runtime, agent, events };
+}
+
+describe("AgentPromptTurnRuntime", () => {
+  it("refreshes, compacts, runs, consumes overrides, and notifies around a successful turn", async () => {
+    const { runtime, agent, events } = harness();
+
+    await runtime.run(async (received) => {
+      expect(received).toBe(agent);
+      events.push("run");
+    });
+
+    expect(events).toEqual([
+      "refresh",
+      "compact",
+      "clear-error",
+      "notify",
+      "run",
+      "consume-overrides",
+      "notify",
+    ]);
+  });
+
+  it("blocks before refresh without consuming one-shot overrides", async () => {
+    const { runtime, events } = harness({ hasApiKey: false });
+
+    await runtime.run(async () => {
+      events.push("run");
+    });
+
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatch(/^set-error-message:Add a openrouter API key/);
+    expect(events[1]).toBe("notify");
+  });
+
+  it("captures run errors and still consumes one-shot overrides", async () => {
+    const { runtime, events } = harness();
+
+    await runtime.run(async () => {
+      events.push("run");
+      throw new Error("boom");
+    });
+
+    expect(events).toEqual([
+      "refresh",
+      "compact",
+      "clear-error",
+      "notify",
+      "run",
+      "set-error:boom",
+      "consume-overrides",
+      "notify",
+    ]);
+  });
+
+  it("rejects a second run while the first is still before its first await", async () => {
+    let release!: () => void;
+    let starts = 0;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { runtime, events } = harness({
+      refreshConfiguration: async () => {
+        events.push("refresh");
+        await gate;
+      },
+      onTurnStart: () => {
+        starts += 1;
+      },
+    });
+
+    let runs = 0;
+    const first = runtime.run(async () => {
+      runs += 1;
+    });
+    const second = runtime.run(async () => {
+      runs += 1;
+    });
+    release();
+
+    const secondOutcome = await second.then(
+      () => "resolved",
+      () => "rejected",
+    );
+    await first;
+    expect(secondOutcome).toBe("resolved");
+    expect(runs).toBe(1);
+    expect(starts).toBe(1);
+    expect(events.some((event) => event.startsWith("set-error-message:A turn is already starting."))).toBe(true);
+  });
+});

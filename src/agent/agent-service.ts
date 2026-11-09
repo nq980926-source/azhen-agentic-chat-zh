@@ -1,0 +1,1071 @@
+import { TFile, Notice, type App, type EventRef } from "obsidian";
+import {
+  type Agent,
+  type AgentEvent,
+  type AgentMessage,
+  type StreamFn,
+  type ThinkingLevel,
+} from "@earendil-works/pi-agent-core";
+import type { Skill } from "../skills/skill-prompt";
+import { type AssistantMessage, type ImageContent, type Usage, type UserMessage } from "@earendil-works/pi-ai";
+import type { AgenticChatSettings } from "../settings";
+import { activeModelId, apiKeyForProvider } from "../settings";
+import type { ToolArtifactStoreLike } from "../artifacts/tool-artifact-store";
+import { effectiveProxy } from "../network/proxy";
+import { createObsidianFetcher, type WebFetcher } from "../tools/web-fetch";
+import type { AskUserHandler } from "../tools/ask-user-tool";
+import type { SkillScaffolder } from "../tools/skill-tools";
+import { createDynamicProxiedFetcher } from "../mcp/fetcher";
+import { AgentObservabilityRuntime } from "../observability/agent-observability";
+import { type ObsidianSessionManager, type SessionDefaults, type SessionInfo } from "../session/session-manager";
+import { type AgentRole } from "./subagents";
+import { handleAgentRuntimeEvent } from "./agent-event-handler";
+import type { RequestCostEstimate } from "./cost";
+import {
+  agentCompactionCount,
+  agentContextFraction,
+  agentNextCostEstimate,
+  agentSessionUsage,
+  agentSupportsImages,
+} from "./service-readouts";
+import { normalizeSteeringText, spendCapAbortReason, type TurnSteeringMode } from "./turn-control";
+import { AgentTurnConfiguration } from "./turn-configuration";
+import { AgentActiveSessionRuntime } from "./active-session-runtime";
+import { ParentAgentRuntime } from "./parent-agent-runtime";
+import { AgentParentConfigurationRuntime } from "./parent-agent-configuration";
+import { AgentSessionLocalState } from "./session-local-state";
+import { AgentToolCallController, type ToolApprovalRequest, type UserApprovalChoice } from "./tool-call-controller";
+import { AgentSessionEventRecorder } from "./session-event-recorder";
+import { AgentActionAuditRecorder } from "./action-audit-log";
+import { AgentFileCheckpointRecorder } from "./file-checkpoints";
+import { AgentSessionActivation } from "./session-activation";
+import { AgentSessionActions } from "./session-actions";
+import { AgentCommandInvocationRuntime } from "./command-invocation";
+import { AgentCompactionRuntime, type AgentCompactionRunResult, type SummarizeFn } from "./compaction-runtime";
+import { maybeCompactAgentTranscript } from "./compaction-orchestrator";
+import { estimateContextUsage } from "./compaction";
+import { conversationMessages } from "./conversation-messages";
+import {
+  AgentServiceListeners,
+  type AgentServiceChangeListener,
+  type AgentServiceEventListener,
+} from "./service-listeners";
+import { AgentStreamRuntime } from "./stream-runtime";
+import { AgentLoopGuard } from "./loop-guard";
+import { AgentRuntimeResourceState } from "./runtime-resource-state";
+import type { AgentRuntimeResources } from "./runtime-resources";
+import { AgentSubagentRuntime } from "./subagent-runtime";
+import { AgentPromptTurnRuntime, SESSION_CHANGED_MESSAGE, type PromptTurnRun } from "./prompt-turn-runtime";
+import {
+  buildRuntimeDiagnostics,
+  MAX_RECENT_DIAGNOSTIC_EVENTS,
+  summarizeAgentEvent,
+  type AgentRuntimeDiagnostics,
+} from "./diagnostics";
+import {
+  runPlanTrackerCommand,
+  type PlanTrackerCommandResult,
+  type PlanTrackerState,
+} from "./plan-tracker";
+export type { ToolApprovalRequest } from "./tool-call-controller";
+
+export type { SummarizeFn } from "./compaction-runtime";
+
+export interface AgentServiceOptions {
+  app: App;
+  getSettings: () => AgenticChatSettings;
+  sessionManager: ObsidianSessionManager;
+  /** Resolve an "ask" approval gate; returns the user's decision. */
+  confirmToolCall: (request: ToolApprovalRequest, signal?: AbortSignal) => Promise<UserApprovalChoice>;
+  /** Injected for tests; production streams through the pi-ai Models runtime. */
+  streamFn?: StreamFn;
+  /**
+   * Disable the loop guard for scripted e2e runs: the guard would soft-stop a
+   * scripted stream that repeats an identical tool batch, failing the spec
+   * with an unrelated-looking transcript divergence.
+   */
+  loopGuardDisabled?: boolean;
+  /** Injected for tests; production summarizes through the chat stream runtime. */
+  summarize?: SummarizeFn;
+  /** Injected for tests; production wraps Obsidian's `requestUrl` for the web tools. */
+  webFetch?: WebFetcher;
+  /** Injected for tests; production wraps Obsidian's `requestUrl` plus observability proxy settings. */
+  observabilityFetch?: WebFetcher;
+  /** Resolve an agent clarification question through the chat UI. */
+  askUser?: AskUserHandler;
+  /** Persist settings when runtime-managed credentials, such as MCP OAuth tokens, rotate. */
+  saveSettings?: () => void | Promise<void>;
+  /** Store large tool outputs so the transcript can reference them by id. */
+  artifactStore?: ToolArtifactStoreLike;
+  /** Backs the agent `create_skill` tool with the New skill wizard writer. Omitted in tests without a vault. */
+  skillScaffolder?: SkillScaffolder;
+  /** Test seam for the existing Azhen Memory HTTPS endpoint; production uses native fetch. */
+  azhenMemoryFetch?: typeof fetch;
+}
+
+export type ManualCompactionResult =
+  | { compacted: true; beforeTokens: number; afterTokens: number; contextWindow: number }
+  | { compacted: false; message: string };
+
+/**
+ * Owns the pi Agent for the chat view: model/tool/skill wiring, approval gates,
+ * JSONL session persistence, and event/state fan-out to the UI.
+ */
+/** No-op loop guard used for scripted e2e runs (see `AgentServiceOptions.loopGuardDisabled`). */
+const DISABLED_LOOP_GUARD: Pick<AgentLoopGuard, "finishTurn"> = {
+  finishTurn: () => undefined,
+};
+
+export class AgentService {
+  private readonly app: App;
+  private readonly getSettings: () => AgenticChatSettings;
+  private readonly webFetch: WebFetcher;
+  private readonly sessions: AgentActiveSessionRuntime;
+  private readonly streams: AgentStreamRuntime;
+  private readonly toolCalls: AgentToolCallController;
+  private readonly subagents: AgentSubagentRuntime;
+  private readonly sessionEvents: AgentSessionEventRecorder;
+  private readonly actionAudit: AgentActionAuditRecorder;
+  private readonly observability: AgentObservabilityRuntime;
+  private readonly fileCheckpoints: AgentFileCheckpointRecorder;
+  private readonly sessionActivation: AgentSessionActivation;
+  private readonly sessionActions: AgentSessionActions;
+  private readonly compaction: AgentCompactionRuntime;
+  private readonly artifactStore?: ToolArtifactStoreLike;
+  private readonly turns: AgentTurnConfiguration;
+  private readonly runtimeResources: AgentRuntimeResourceState;
+  private readonly parentConfiguration: AgentParentConfigurationRuntime;
+  private readonly parentAgent: ParentAgentRuntime;
+  private readonly sessionState = new AgentSessionLocalState();
+  private readonly listeners = new AgentServiceListeners();
+  private readonly loopGuard = new AgentLoopGuard();
+  private readonly recentEvents: string[] = [];
+  private readonly promptTurns: AgentPromptTurnRuntime;
+  /** Redirect messages waiting for delivery, and the single drain worker. */
+  private readonly pendingRedirects: Array<{
+    text: string;
+    images?: ImageContent[];
+    expectedSessionToken?: string;
+    resolve: () => void;
+  }> = [];
+  private redirectWorker: Promise<void> | null = null;
+  private readonly commandInvocations: AgentCommandInvocationRuntime;
+
+  private initialization: Promise<void> | null = null;
+  /** Set when a compaction rewrite landed but the live transcript is stale. */
+  private compactionRecoveryError: string | undefined;
+
+  /** Vault `modify` listener that drops memoized reads when a file changes externally. */
+  private vaultModifyRef?: EventRef;
+
+  constructor(options: AgentServiceOptions) {
+    this.app = options.app;
+    this.getSettings = options.getSettings;
+    const sessionManager = options.sessionManager;
+    this.artifactStore = options.artifactStore;
+    this.webFetch = options.webFetch ?? createDynamicProxiedFetcher(() => this.getSettings().network, createObsidianFetcher());
+    this.sessions = new AgentActiveSessionRuntime(sessionManager, () => this.sessionDefaults());
+    this.observability = new AgentObservabilityRuntime({
+      getSettings: this.getSettings,
+      fetcher:
+        options.observabilityFetch ??
+        createDynamicProxiedFetcher(() => this.effectiveObservabilityProxySettings(), createObsidianFetcher()),
+      getSessionContext: () => ({
+        sessionId: this.sessions.info?.id,
+        sessionPath: this.sessions.activePath,
+      }),
+    });
+    this.streams = new AgentStreamRuntime({
+      getSettings: this.getSettings,
+      streamFn: options.streamFn,
+    });
+    this.sessionEvents = new AgentSessionEventRecorder(sessionManager);
+    this.turns = new AgentTurnConfiguration({ getSettings: this.getSettings });
+    this.actionAudit = new AgentActionAuditRecorder({
+      sessionManager,
+      getContext: () => ({
+        provider: this.getSettings().provider,
+        modelId: this.getActiveModelId(),
+        thinkingLevel: this.getActiveThinkingLevel(),
+      }),
+    });
+    this.fileCheckpoints = new AgentFileCheckpointRecorder({ sessionManager });
+    this.compaction = new AgentCompactionRuntime({
+      getSettings: this.getSettings,
+      sessionManager,
+      buildStreamFn: () => this.streams.buildStreamFn(),
+      summarize: options.summarize,
+    });
+    this.runtimeResources = new AgentRuntimeResourceState({
+      app: this.app,
+      getSettings: this.getSettings,
+      readMemo: this.sessionState.readMemo,
+      webFetch: this.webFetch,
+      askUser:
+        options.askUser ??
+        (async () => {
+          throw new Error("ask_user is unavailable because no chat UI handler is registered.");
+        }),
+      saveSettings: options.saveSettings,
+      artifactStore: options.artifactStore,
+      skillScaffolder: options.skillScaffolder,
+      azhenMemoryFetch: options.azhenMemoryFetch,
+      getAzhenMemoryTurnContext: () => ({
+        sessionId: this.sessions.info?.id,
+        messages: this.getMessages(),
+      }),
+    });
+    this.subagents = new AgentSubagentRuntime({
+      app: this.app,
+      getSettings: this.getSettings,
+      getResources: () => this.runtimeResources.current,
+      buildStreamFn: () => this.streams.buildStreamFn(),
+      recordUsage: (usage) => this.sessionState.recordSubagentUsage(usage),
+      webFetch: this.webFetch,
+      artifactStore: options.artifactStore,
+      // Deferred: the controller is constructed next and shares this runtime's registry.
+      toolCalls: {
+        beforeToolCall: (context, signal) => this.toolCalls.beforeToolCall(context, signal),
+        afterToolCall: (context) => this.toolCalls.afterToolCall(context),
+      },
+    });
+    this.toolCalls = new AgentToolCallController({
+      app: this.app,
+      getSettings: this.getSettings,
+      confirmToolCall: options.confirmToolCall,
+      getTools: () => this.agent?.state.tools ?? [],
+      getProfiles: () => this.runtimeResources.current.profiles,
+      onUndoApplied: () => this.notifyChange(),
+      onStopRequested: () => this.abort(),
+      recordApproval: (input) => {
+        this.observability.recordApproval(input);
+        return this.actionAudit.recordApproval(input);
+      },
+      recordCheckpoint: (input) => this.actionAudit.recordCheckpoint(input),
+      recordFileCheckpoint: (checkpoint) => this.fileCheckpoints.record(checkpoint),
+      subagentRegistry: this.subagents.registry,
+    });
+    this.parentConfiguration = new AgentParentConfigurationRuntime({
+      getSettings: this.getSettings,
+      streams: this.streams,
+      turns: this.turns,
+      runtimeResources: this.runtimeResources,
+      subagents: this.subagents,
+      toolCalls: this.toolCalls,
+      loopGuard: options.loopGuardDisabled ? DISABLED_LOOP_GUARD : this.loopGuard,
+      sessions: this.sessions,
+      onEvent: (event) => this.handleAgentEvent(event),
+    });
+    this.parentAgent = new ParentAgentRuntime(() => this.parentConfiguration.build());
+    this.sessionActivation = new AgentSessionActivation({
+      parentAgent: this.parentAgent,
+      sessionEvents: this.sessionEvents,
+      sessionState: this.sessionState,
+      toolCalls: this.toolCalls,
+      runtimeResources: this.runtimeResources,
+    });
+    this.sessionActions = new AgentSessionActions({
+      sessions: this.sessions,
+      activation: this.sessionActivation,
+      notifyChange: () => this.notifyChange(),
+      afterDelete: () => this.cleanupArtifactsAfterSessionDelete(),
+    });
+    this.promptTurns = new AgentPromptTurnRuntime({
+      requireAgent: () => this.requireAgent(),
+      getSettings: this.getSettings,
+      hasApiKey: () => this.hasApiKey(),
+      getSessionCostUsd: () => this.getSessionUsage().cost?.total ?? 0,
+      refreshConfiguration: () => this.parentConfiguration.refresh(this.parentAgent),
+      maybeCompact: () => this.maybeCompact(),
+      afterCompaction: () => this.compactionRecoveryError,
+      sessionToken: () => this.sessionActions.getSessionToken(),
+      onTurnStart: () => this.toolCalls.clearStopRequested(),
+      clearError: () => this.sessionState.clearError(),
+      setError: (error) => this.sessionState.setError(error),
+      setErrorMessage: (message) => this.sessionState.setErrorMessage(message),
+      consumeOverrides: () => this.turns.consumeOverrides(),
+      notifyChange: () => this.notifyChange(),
+    });
+    this.commandInvocations = new AgentCommandInvocationRuntime({
+      getResources: () => this.runtimeResources.current,
+      runPrompt: (prompt) => this.runPrompt((agent) => agent.prompt(prompt)),
+      setError: (message) => this.setError(message),
+    });
+    // External edits change a file's contents out from under the agent; drop any
+    // memoized read of it so the next read serves fresh content instead of a
+    // stale "already read" pointer. Agent-driven writes invalidate via the tool.
+    this.vaultModifyRef = this.app.vault.on("modify", (file) => {
+      if (file instanceof TFile) this.sessionState.invalidateRead(file.path);
+    });
+  }
+
+  private get agent(): Agent | null {
+    return this.parentAgent.current;
+  }
+
+  onEvent(listener: AgentServiceEventListener): () => void {
+    return this.listeners.onEvent(listener);
+  }
+
+  onChange(listener: AgentServiceChangeListener): () => void {
+    return this.listeners.onChange(listener);
+  }
+
+  /**
+   * The conversation transcript, without pi's system-context message.
+   *
+   * pi 1.0.0 seeds a leading `system` message into `agent.state.messages`
+   * carrying the system prompt and tool declarations. That is runtime context,
+   * not conversation: exposing it here would leak the whole prompt and tool
+   * schemas into the UI, session persistence, and the export path.
+   */
+  getMessages(): AgentMessage[] {
+    return conversationMessages(this.agent?.state.messages ?? []);
+  }
+
+  isStreaming(): boolean {
+    return this.agent?.state.isStreaming ?? false;
+  }
+
+  /** Whether a prompt turn is starting or running, including the pre-stream window. */
+  isTurnInFlight(): boolean {
+    return this.promptTurns.isInFlight() || this.isStreaming();
+  }
+
+  /** Stop one subagent dispatched by this service; other services are untouched. */
+  abortSubagentChild(id: string): void {
+    this.subagents.abortChild(id);
+  }
+
+  getError(): string | undefined {
+    return this.sessionState.error ?? this.agent?.state.errorMessage;
+  }
+
+  getSessionInfo(): SessionInfo | undefined {
+    return this.sessions.info;
+  }
+
+  getPlanTracker(): PlanTrackerState | null {
+    return this.sessions.getPlanTracker();
+  }
+
+  async runPlanTrackerCommand(input: string): Promise<PlanTrackerCommandResult> {
+    await this.initialize();
+    const result = runPlanTrackerCommand(this.sessions.getPlanTracker(), input);
+    if (result.changed) {
+      await this.sessions.savePlanTracker(result.state);
+      this.notifyChange();
+    }
+    return result;
+  }
+
+  getSkills(): Skill[] {
+    return this.runtimeResources.getSkills();
+  }
+
+  /**
+   * Set (or clear) a one-shot model override applied to the next prompt only,
+   * then automatically reverted. A stepping stone to per-agent model routing.
+   * Ignored for Ollama (the model id space is provider-specific).
+   */
+  setModelOverride(modelId: string | null): void {
+    this.turns.setModelOverride(modelId);
+    // Reflect the pending override in the chrome/estimate right away — but never
+    // swap the model out from under an in-flight turn; refreshConfiguration will
+    // pick it up before the next prompt.
+    if (this.agent && !this.agent.state.isStreaming) {
+      this.agent.state.model = this.turns.buildModelForTurn();
+    }
+    this.notifyChange();
+  }
+
+  /**
+   * The pending one-shot model override, or null when none is queued. Reported
+   * only for OpenRouter; other providers ignore the provider-specific override,
+   * so the UI must too.
+   */
+  getModelOverride(): string | null {
+    return this.turns.getModelOverride();
+  }
+
+  /** The model id the next prompt will actually use (override if queued, else settings). */
+  getActiveModelId(): string {
+    return this.turns.getActiveModelId();
+  }
+
+  /** The thinking level the next prompt will actually use (clamped to the active model). */
+  getActiveThinkingLevel(): ThinkingLevel {
+    return this.turns.getActiveThinkingLevel();
+  }
+
+  /**
+   * Reasoning levels the active model actually supports, in UI order. Drives the
+   * composer effort knob and `/effort` so the UI never offers a level (e.g.
+   * `xhigh`) the current model can't take. Cached by model id so repeated UI
+   * interactions (opening the picker, cycling effort) don't rebuild the model.
+   */
+  getActiveThinkingLevels(): ThinkingLevel[] {
+    return this.turns.getActiveThinkingLevels();
+  }
+
+  getProfiles(): AgentRole[] {
+    return this.runtimeResources.getProfiles();
+  }
+
+  /**
+   * Fraction (0–1) of the model's context window filled by the most recent turn.
+   * Uses the last assistant turn's input tokens (the prompt pi sent that turn) as
+   * a proxy for how full the next request will be. Undefined if unknown.
+   */
+  getContextFraction(): number | undefined {
+    return agentContextFraction({ messages: this.getMessages(), model: this.agent?.state.model });
+  }
+
+  /** Sum token usage and cost across all assistant turns in the active session. */
+  getSessionUsage(): Usage {
+    return agentSessionUsage({
+      messages: this.getMessages(),
+      subagentUsage: this.sessionState.subagentUsage,
+    });
+  }
+
+  /** Number of times this session has been auto-compacted (for one-shot UI notices). */
+  getCompactionCount(): number {
+    return agentCompactionCount({ messages: this.getMessages() });
+  }
+
+  /**
+   * Re-read vault-backed runtime resources (plugins, skills, roles, MCP
+   * servers) so diagnostics and the next turn reflect the current vault.
+   */
+  async reloadRuntimeResources(): Promise<AgentRuntimeResources> {
+    return this.runtimeResources.reload();
+  }
+
+  getRuntimeDiagnostics(): AgentRuntimeDiagnostics {
+    const settings = this.getSettings();
+    return buildRuntimeDiagnostics({
+      settings,
+      sessionInfo: this.sessions.info,
+      sessionPath: this.sessions.activePath,
+      tools: this.agent?.state.tools ?? [],
+      resources: this.runtimeResources.current,
+      resourcesReloadedAt: this.runtimeResources.lastReloadAt,
+      toolBudget: this.runtimeResources.getToolBudgetSnapshot(),
+      modelOverride: this.getModelOverride(),
+      contextWindow: this.turns.buildModelForTurn().contextWindow || null,
+      thinkingLevel: this.getActiveThinkingLevel(),
+      isStreaming: this.isStreaming(),
+      canUndo: this.canUndo(),
+      lastError: this.getError(),
+      contextFraction: this.getContextFraction(),
+      compactionCount: this.getCompactionCount(),
+      usage: this.getSessionUsage(),
+      recentEvents: this.recentEvents,
+      observabilityHealth: this.observability.getHealth(),
+    });
+  }
+
+  /**
+   * Estimated size and cost of the next request (current transcript + assumed
+   * output), for a pre-send readout. Undefined when the model has no pricing
+   * (unknown model or local Ollama) so the UI can omit a meaningless "$0".
+   */
+  estimateNextCost(): RequestCostEstimate | undefined {
+    const model = this.agent?.state.model;
+    const settings = this.getSettings();
+    // Include the system prompt (base + overlays + skills + subagents) so the
+    // first-turn estimate isn't a large underestimate.
+    return agentNextCostEstimate({
+      messages: this.getMessages(),
+      model,
+      settings,
+      systemPrompt: this.runtimeResources.composeSystemPrompt(settings, this.getActiveModelId()),
+    });
+  }
+
+  /** Whether there's a captured vault change that {@link undoLastChange} can revert. */
+  canUndo(): boolean {
+    return this.toolCalls.canUndo();
+  }
+
+  async undoLastChange(): Promise<string> {
+    return this.toolCalls.undoLastChange();
+  }
+
+  async initialize(): Promise<void> {
+    // Join the swap queue before checking the agent: a send that arrives while
+    // another session is loading must wait for that swap, not start on the old
+    // agent. A failed swap rejects until a later swap recovers it.
+    await this.sessionActions.waitForLive();
+    if (this.agent) return;
+    if (this.initialization) return this.initialization;
+    this.initialization = this.sessionActions.ensureSessionAgent();
+    try {
+      await this.initialization;
+    } finally {
+      this.initialization = null;
+    }
+  }
+
+  async sendPrompt(prompt: string, images?: ImageContent[], expectedSessionToken?: string): Promise<void> {
+    const trimmed = prompt.trim();
+    if (!trimmed) return;
+    const attached = images && images.length > 0 ? images : undefined;
+    await this.runPrompt((agent) => agent.prompt(trimmed, attached), expectedSessionToken);
+  }
+
+  /** Session path + explicit operation epoch, for stale-send guards. */
+  getSessionToken(): string {
+    return this.sessionActions.getSessionToken();
+  }
+
+  /** Surface the shared stale-session message without starting a turn. */
+  reportSessionChanged(): void {
+    this.setError(SESSION_CHANGED_MESSAGE);
+  }
+
+  async steerPrompt(prompt: string, images?: ImageContent[], expectedSessionToken?: string): Promise<void> {
+    await this.queueSteeringPrompt("steer", prompt, images, expectedSessionToken);
+  }
+
+  async followUpPrompt(prompt: string, images?: ImageContent[], expectedSessionToken?: string): Promise<void> {
+    await this.queueSteeringPrompt("follow-up", prompt, images, expectedSessionToken);
+  }
+
+  async redirectPrompt(prompt: string, images?: ImageContent[], expectedSessionToken?: string): Promise<void> {
+    await this.queueSteeringPrompt("redirect", prompt, images, expectedSessionToken);
+  }
+
+  /** Whether the model the next turn will use accepts image input (vision). */
+  supportsImages(): boolean {
+    return agentSupportsImages(this.agent?.state.model);
+  }
+
+  /**
+   * Whether a vault-relative path is ignore-listed (invisible to the agent's
+   * tools). Used by the composer so an attachment — especially the auto-attached
+   * active note — in a private/ignored folder never leaks its contents into the
+   * prompt; only a path-only reference (or nothing) is surfaced.
+   */
+  isPathIgnored(path: string): boolean {
+    return this.runtimeResources.isPathIgnored(path);
+  }
+
+  async invokeSkill(name: string, args?: string): Promise<void> {
+    return this.commandInvocations.invokeSkill(name, args);
+  }
+
+  private async cleanupArtifactsAfterSessionDelete(): Promise<void> {
+    try {
+      await this.artifactStore?.cleanupArtifacts?.();
+    } catch (error) {
+      console.warn(
+        `Agentic Chat: artifact cleanup after session deletion failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  /** User-driven dispatch: ask the model to delegate a task to a named subagent. */
+  async invokeAgent(name: string, task: string): Promise<void> {
+    return this.commandInvocations.invokeAgent(name, task);
+  }
+
+  /**
+   * `/init`: drive the agent to curate the vault's standing-instructions file
+   * (AGENTS.md → CLAUDE.md → GEMINI.md). The agent reads the current file (if any)
+   * and surveys the vault structure, then refines it with surgical `edit` calls —
+   * each surfaces as a diff through the approval gate. `write` is used only to
+   * create the file when none exists.
+   */
+  async invokeInit(instructions?: string): Promise<void> {
+    return this.commandInvocations.invokeInit(instructions);
+  }
+
+  /** Persist a user-authored standing instruction through the normal tool/approval path. */
+  async invokeInstruction(instruction: string): Promise<void> {
+    return this.commandInvocations.invokeInstruction(instruction);
+  }
+
+  /** User-triggered compaction, optionally guided by instructions after `/compact`. */
+  async compactNow(customInstructions?: string): Promise<ManualCompactionResult> {
+    await this.initialize();
+    if (this.requireAgent().state.isStreaming) {
+      const message = "Wait for the agent to finish before compacting the conversation.";
+      this.setError(message);
+      return { compacted: false, message };
+    }
+    const agent = this.agent;
+    if (!agent) return { compacted: false, message: "Nothing compacted. No active conversation is loaded." };
+    // Compact the conversation only. pi's system message stays as agent state,
+    // and the replacement agent re-seeds it from the current system prompt.
+    const messages = conversationMessages(agent.state.messages);
+    const sessionToken = this.sessionActions.getSessionToken();
+    const expectedPath = this.sessions.activePath;
+    const expectedGeneration = this.sessions.generation;
+    const contextWindow = agent.state.model?.contextWindow ?? 0;
+    const stats = {
+      messageCount: messages.length,
+      userTurns: messages.filter((message) => message.role === "user").length,
+      estimatedTokens: estimateContextUsage(messages),
+      contextWindow,
+      hasInstructions: Boolean(customInstructions?.trim()),
+    };
+    const startEvent = {
+      category: "compaction" as const,
+      action: "start" as const,
+      trigger: "manual" as const,
+      timestamp: new Date().toISOString(),
+      ...stats,
+    };
+    await this.actionAudit.record(startEvent);
+    if (this.sessionActions.getSessionToken() !== sessionToken) {
+      return {
+        compacted: false,
+        message: "Nothing compacted. The active session changed before compaction started.",
+      };
+    }
+    let result: AgentCompactionRunResult;
+    try {
+      result = await this.compaction.compactWithResult(messages, contextWindow, {
+        force: true,
+        customInstructions: customInstructions?.trim() || undefined,
+        expectedPath,
+        expectedGeneration,
+      });
+    } catch (error) {
+      // A session change during summarization cancels the rewrite. Report it as
+      // a normal manual-compaction result so `/compact` does not throw.
+      const message =
+        `Nothing compacted. The active session changed while compacting: ${
+          error instanceof Error ? error.message : String(error)
+        }`;
+      return { compacted: false, message };
+    }
+    if (result.status === "skipped") {
+      await this.actionAudit.record({
+        category: "compaction",
+        action: "end",
+        trigger: "manual",
+        timestamp: new Date().toISOString(),
+        status: "skipped",
+        reason: result.reason,
+        message: result.message,
+        ...stats,
+      });
+      return { compacted: false, message: result.message };
+    }
+    // The audit await above (and summarization) can outlive the session. Never
+    // install a transcript from A into the agent that now holds B.
+    if (this.sessionActions.getSessionToken() !== sessionToken) {
+      return {
+        compacted: false,
+        message: "Nothing compacted. The active session changed while compacting.",
+      };
+    }
+    // The saved session is already rewritten at this point. If the live agent
+    // cannot be replaced, report it instead of pretending compaction succeeded.
+    try {
+      this.sessionEvents.markPersistedMessages(result.messages);
+      this.parentAgent.replace(result.messages);
+    } catch (error) {
+      if (!(await this.recoverCompactedSession())) {
+        const detail = error instanceof Error ? error.message : String(error);
+        const message =
+          `Compaction rewrote the saved session, but the live conversation could not be replaced: ${detail}. ` +
+          "Reload the session to continue from the compacted transcript.";
+        this.setError(message);
+        return { compacted: false, message };
+      }
+    }
+    this.sessions.refreshInfoIfActive();
+    this.notifyChange();
+    // A successful compaction rewrites the session file, which drops audit
+    // entries written before the rewrite. Re-record start so the final JSONL
+    // still shows a complete start/end pair for the manual attempt.
+    await this.actionAudit.record(startEvent);
+    await this.actionAudit.record({
+      category: "compaction",
+      action: "end",
+      trigger: "manual",
+      timestamp: new Date().toISOString(),
+      status: "compacted",
+      replacementMessageCount: result.messages.length,
+      ...stats,
+    });
+    return {
+      compacted: true,
+      beforeTokens: stats.estimatedTokens,
+      afterTokens: estimateContextUsage(result.messages),
+      contextWindow,
+    };
+  }
+
+  abort(): void {
+    const agent = this.agent;
+    if (!agent) return;
+    this.stopAgent(agent);
+    void agent.waitForIdle().then(() => this.notifyChange());
+  }
+
+  /**
+   * One stop policy for every path that ends a turn early: clear steering and
+   * follow-up queues first, then abort. Clearing first guarantees a queued
+   * message cannot be drained into the next run after the stop.
+   */
+  private stopAgent(agent: Agent): void {
+    agent.clearAllQueues();
+    agent.abort();
+  }
+
+  async newSession(): Promise<void> {
+    this.loopGuard.reset();
+    return this.sessionActions.newSession();
+  }
+
+  async continueRecentSession(): Promise<void> {
+    return this.sessionActions.continueRecentSession();
+  }
+
+  async listSessions(): Promise<SessionInfo[]> {
+    return this.sessionActions.listSessions();
+  }
+
+  async loadSession(path: string): Promise<void> {
+    this.loopGuard.reset();
+    return this.sessionActions.loadSession(path);
+  }
+
+  /** Inspectable session-swap state for diagnostics and tests. */
+  getSessionSwapState(): ReturnType<AgentSessionActions["getSwapState"]> {
+    return this.sessionActions.getSwapState();
+  }
+
+  async deleteSession(path: string): Promise<void> {
+    return this.sessionActions.deleteSession(path);
+  }
+
+  async clearSessions(): Promise<number> {
+    return this.sessionActions.clearSessions();
+  }
+
+  async renameSession(path: string, name: string): Promise<void> {
+    return this.sessionActions.renameSession(path, name);
+  }
+
+  /**
+   * Rewind the conversation to just before message `index` (prompt editing): drop
+   * that turn and everything after it, in memory and on disk, so the caller can
+   * resend an edited prompt as a fresh branch.
+   */
+  async truncateMessages(index: number): Promise<void> {
+    this.loopGuard.reset();
+    return this.sessionActions.truncateMessages(index);
+  }
+
+  dispose(): void {
+    if (this.parentAgent.isDisposed) return;
+    if (this.vaultModifyRef) this.app.vault.offref(this.vaultModifyRef);
+    this.vaultModifyRef = undefined;
+    this.parentAgent.dispose();
+    this.listeners.clear();
+  }
+
+  private async runPrompt(run: PromptTurnRun, expectedSessionToken?: string): Promise<void> {
+    this.compactionRecoveryError = undefined;
+    await this.initialize();
+    // A fresh prompt starts a new epoch: any identical-batch streak from a
+    // previous user turn must not carry into this one (loop guard).
+    this.loopGuard.reset();
+    await this.promptTurns.run(run, expectedSessionToken);
+  }
+
+  private async queueSteeringPrompt(
+    mode: TurnSteeringMode,
+    prompt: string,
+    images?: ImageContent[],
+    expectedSessionToken?: string,
+  ): Promise<void> {
+    const text = normalizeSteeringText(prompt);
+    if (!text) return;
+    await this.initialize();
+    if (expectedSessionToken !== undefined && this.getSessionToken() !== expectedSessionToken) {
+      this.reportSessionChanged();
+      return;
+    }
+    const attached = images && images.length > 0 ? images : undefined;
+    if (mode === "redirect") {
+      await this.queueRedirect(text, attached, expectedSessionToken);
+      return;
+    }
+    const agent = this.requireAgent();
+    if (!agent.state.isStreaming) {
+      await this.sendPrompt(text, attached, expectedSessionToken);
+      return;
+    }
+
+    const message = createUserMessage(text, attached);
+    this.sessionState.clearError();
+    // Steering is user input too: user-provided info ends any running streak.
+    this.loopGuard.reset();
+    if (mode === "follow-up") agent.followUp(message);
+    else agent.steer(message);
+    this.notifyChange();
+  }
+
+  /**
+   * Redirects stop the current run and start a new prompt. A quick second
+   * redirect must not hit the in-flight turn guard and disappear, so deliveries
+   * are queued and drained in order. Each new redirect still aborts the run that
+   * is live when it arrives.
+   */
+  private async queueRedirect(text: string, images?: ImageContent[], expectedSessionToken?: string): Promise<void> {
+    if (expectedSessionToken !== undefined && this.getSessionToken() !== expectedSessionToken) {
+      this.reportSessionChanged();
+      return;
+    }
+    const delivery = new Promise<void>((resolve) => {
+      this.pendingRedirects.push({ text, images, expectedSessionToken, resolve });
+    });
+    const agent = this.requireAgent();
+    if (agent.state.isStreaming) this.stopAgent(agent);
+    this.startRedirectWorker();
+    await delivery;
+  }
+
+  private startRedirectWorker(): void {
+    if (this.redirectWorker) return;
+    const worker = this.drainRedirects();
+    this.redirectWorker = worker;
+    void worker.finally(() => {
+      if (this.redirectWorker === worker) this.redirectWorker = null;
+      if (this.pendingRedirects.length > 0) this.startRedirectWorker();
+    });
+  }
+
+  private async drainRedirects(): Promise<void> {
+    while (this.pendingRedirects.length > 0) {
+      const entry = this.pendingRedirects.shift()!;
+      try {
+        if (
+          entry.expectedSessionToken !== undefined &&
+          this.getSessionToken() !== entry.expectedSessionToken
+        ) {
+          // The redirect was prepared in A but the worker is now in B. Drop it
+          // rather than aborting B or injecting A's text into it.
+          this.reportSessionChanged();
+          continue;
+        }
+        const agent = this.requireAgent();
+        if (agent.state.isStreaming) {
+          this.stopAgent(agent);
+          await agent.waitForIdle(); // NOSONAR:S9382 -- redirects are delivered in order; this wait is sequential by design.
+        }
+        await this.promptTurns.waitForIdle(); // NOSONAR:S9382 -- redirects are delivered in order; this wait is sequential by design.
+        this.sessionState.clearError();
+        this.loopGuard.reset();
+        // Never route a redirect through sendPrompt: that path can compact and
+        // replace the agent, which would drop the redirected message. The entry
+        // token is passed again because either idle wait above can outlive a swap.
+        await this.runPrompt( // NOSONAR:S9382 -- redirects are delivered in order; this wait is sequential by design.
+          (currentAgent) => currentAgent.prompt(createUserMessage(entry.text, entry.images)),
+          entry.expectedSessionToken,
+        );
+      } catch (error) {
+        this.sessionState.setError(error);
+      } finally {
+        entry.resolve();
+      }
+    }
+  }
+
+  private async handleAgentEvent(event: AgentEvent): Promise<void> {
+    this.recordRecentEvent(event);
+    this.observability.handleAgentEvent(event);
+    await handleAgentRuntimeEvent(event, {
+      recordMessageEnd: (message) => this.sessionEvents.recordMessageEnd(message),
+      recordAgentEnd: async (messages) => {
+        // Persist the run first so a guard-message failure can never drop the
+        // transcript; the guard note is appended after, never injected mid-context.
+        await this.sessionEvents.recordAgentEnd(messages);
+        try {
+          await this.emitLoopGuardMessage();
+        } catch {
+          // UI/persist for the synthetic note is best-effort — the run above won.
+        }
+      },
+      recordAuditEvent: (agentEvent) => this.actionAudit.recordAgentEvent(agentEvent),
+      enforceSpendCap: () => this.enforceSpendCap(),
+      setError: (error) => this.sessionState.setError(error),
+      emitEvent: (agentEvent) => this.listeners.emitEvent(agentEvent),
+      hasActiveSession: () => this.sessions.activePath !== null,
+      refreshActiveSessionInfo: () => this.sessions.refreshInfoIfActive(),
+      notifyChange: () => this.notifyChange(),
+    });
+  }
+
+  /**
+   * Hard spend cap: abort the in-flight run once this conversation's cost reaches
+   * the cap, so a long tool-use turn can't blow past it. The pre-send check in
+   * `runPrompt` stops new turns; this stops a turn already underway.
+   */
+  private enforceSpendCap(): void {
+    const agent = this.agent;
+    const reason = spendCapAbortReason({
+      isStreaming: agent?.state.isStreaming ?? false,
+      spendCapUsd: this.getSettings().notifications.costCapUsd,
+      sessionCostUsd: this.getSessionUsage().cost?.total ?? 0,
+    });
+    if (!reason) return;
+    this.sessionState.setErrorMessage(reason);
+    if (agent) this.stopAgent(agent);
+  }
+
+  /**
+   * When the loop guard fired, append the plain-text explanation at the end of
+   * the transcript (live context + JSONL + chat bubble) plus a transient
+   * Notice. Append-only by design: the model sees why the run stopped on retry.
+   * Runs once per fire — the guard clears its notice on the next prompt.
+   */
+  private async emitLoopGuardMessage(): Promise<void> {
+    const text = this.loopGuard.noticeText;
+    if (!text) return;
+    const message = this.buildLoopGuardMessage(text);
+    // Append to live agent context first so the next turn sees the stop reason.
+    this.agent?.state.messages.push(message);
+    await this.sessionEvents.recordMessageEnd(message);
+    this.listeners.emitEvent({ type: "message_start", message });
+    this.listeners.emitEvent({ type: "message_end", message });
+    try {
+      new Notice(text);
+    } catch {
+      // Headless tests / no DOM — chat bubble above already carries the note.
+    }
+  }
+
+  /**
+   * Synthetic assistant message explaining the loop-guard stop. Same shape as
+   * replay turns, so the chat bubble and JSONL rehydration render it normally.
+   */
+  private buildLoopGuardMessage(text: string): AssistantMessage {
+    const model = this.agent?.state.model as
+      | { api?: AssistantMessage["api"]; provider?: string; id?: string }
+      | undefined;
+    return {
+      role: "assistant",
+      content: [{ type: "text", text }],
+      api: model?.api ?? "openai-completions",
+      provider: model?.provider ?? "openrouter",
+      model: model?.id ?? "unknown",
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: "stop",
+      timestamp: Date.now(),
+    };
+  }
+
+  /**
+   * Auto-compaction: when the transcript fills past the configured threshold,
+   * summarize the older turns into a single message and keep the recent ones, in
+   * memory and on disk. Best-effort — any failure (no key, summary error, write
+   * error) leaves the transcript untouched so a prompt is never lost.
+   */
+  private async maybeCompact(): Promise<void> {
+    await maybeCompactAgentTranscript({
+      getTranscript: () => {
+        const agent = this.agent;
+        if (!agent) return null;
+        // Compact the conversation only; pi's system message is agent state and
+        // is re-seeded from the current prompt when the agent is replaced.
+        return {
+          messages: conversationMessages(agent.state.messages),
+          contextWindow: agent.state.model?.contextWindow ?? 0,
+        };
+      },
+      compact: (messages, contextWindow) => this.compaction.compact(messages, contextWindow),
+      markPersistedMessages: (messages) => this.sessionEvents.markPersistedMessages(messages),
+      replaceAgent: (messages) => this.parentAgent.replace(messages),
+      refreshActiveSessionInfo: () => this.sessions.refreshInfoIfActive(),
+      notifyChange: () => this.notifyChange(),
+      recoverAfterReplaceFailure: () => this.recoverCompactedSession(),
+      onCompactionFailure: (_error, persisted) => {
+        if (!persisted) return;
+        this.compactionRecoveryError =
+          "Compaction rewrote the saved session, but the live conversation could not be replaced. " +
+          "Reload the session to continue from the compacted transcript.";
+        this.setError(this.compactionRecoveryError);
+      },
+    });
+  }
+
+  /**
+   * Re-read the active session after a successful compaction rewrite whose live
+   * replacement failed, so the next turn continues from the persisted summary
+   * instead of a stale in-memory transcript.
+   */
+  private async recoverCompactedSession(): Promise<boolean> {
+    const path = this.sessions.activePath;
+    const expectedGeneration = this.sessions.generation;
+    if (!path) return false;
+    try {
+      // Bind the reload to the session that failed to replace. A user switch
+      // during the read must win instead of being overwritten by recovery.
+      const snapshot = await this.sessions.load(path, {
+        expectedPath: path,
+        expectedGeneration,
+      });
+      this.sessionEvents.markPersistedMessages(snapshot.messages);
+      this.parentAgent.replace(snapshot.messages);
+      this.sessions.refreshInfoIfActive();
+      this.notifyChange();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private recordRecentEvent(event: AgentEvent): void {
+    this.recentEvents.push(summarizeAgentEvent(event));
+    if (this.recentEvents.length > MAX_RECENT_DIAGNOSTIC_EVENTS) {
+      this.recentEvents.splice(0, this.recentEvents.length - MAX_RECENT_DIAGNOSTIC_EVENTS);
+    }
+  }
+
+  private effectiveObservabilityProxySettings(): { proxyUrl: string; noProxy: string } {
+    const settings = this.getSettings();
+    return effectiveProxy(settings.observability, settings.network);
+  }
+
+  private sessionDefaults(): SessionDefaults {
+    const settings = this.getSettings();
+    return {
+      provider: settings.provider,
+      modelId: activeModelId(settings),
+      thinkingLevel: settings.thinkingLevel,
+    };
+  }
+
+  private hasApiKey(): boolean {
+    return !!apiKeyForProvider(this.getSettings(), this.getSettings().provider);
+  }
+
+  private requireAgent(): Agent {
+    return this.parentAgent.requireAgent();
+  }
+
+  private setError(message: string): void {
+    this.sessionState.setErrorMessage(message);
+    this.notifyChange();
+  }
+
+  private notifyChange(): void {
+    this.listeners.notifyChange();
+  }
+}
+
+function createUserMessage(text: string, images?: ImageContent[]): UserMessage {
+  const content: UserMessage["content"] = [{ type: "text", text }];
+  if (images) content.push(...images);
+  return { role: "user", content, timestamp: Date.now() };
+}

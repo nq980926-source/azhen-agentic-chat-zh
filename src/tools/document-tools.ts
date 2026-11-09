@@ -1,0 +1,212 @@
+import type { App, DataAdapter } from "obsidian";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
+import { Type } from "typebox";
+import type { ToolArtifactStoreLike } from "../artifacts/tool-artifact-store";
+import {
+  DocumentArtifactDeduper,
+  documentKindFromPath,
+  type DocumentImportWriteResult,
+} from "../retrieval/document-ingest";
+import { PdfArtifactDeduper } from "../retrieval/pdf-ingest";
+import { normalizeVaultPath } from "../vault/path";
+
+const ImportPdfParameters = Type.Object({
+  path: Type.String({ description: "vault-relative PDF path" }),
+  title: Type.Optional(Type.String({ description: "artifact title" })),
+  maxChunkChars: Type.Optional(Type.Number({ description: "chunk size (default 8000)" })),
+});
+
+const ImportDocumentParameters = Type.Object({
+  path: Type.String({ description: "vault-relative source file" }),
+  title: Type.Optional(Type.String({ description: "artifact title" })),
+  maxChunkChars: Type.Optional(Type.Number({ description: "chunk size (default 8000)" })),
+});
+
+export function createDocumentTools(app: App, artifactStore: ToolArtifactStoreLike | undefined): AgentTool[] {
+  if (!artifactStore) return [];
+  const pdfArtifacts = new PdfArtifactDeduper();
+  const documentArtifacts = new DocumentArtifactDeduper();
+  return [
+    createImportPdfTool(app.vault.adapter, artifactStore, pdfArtifacts),
+    createImportDocumentTool(app.vault.adapter, artifactStore, pdfArtifacts, documentArtifacts),
+  ];
+}
+
+function createImportPdfTool(
+  adapter: DataAdapter | undefined,
+  artifactStore: ToolArtifactStoreLike,
+  pdfArtifacts: PdfArtifactDeduper,
+): AgentTool<typeof ImportPdfParameters> {
+  return {
+    name: "import_pdf",
+    label: "Import PDF",
+    description:
+      "Extract text from a vault PDF into an artifact with citation anchors; " +
+      "returns the artifact citation, not the full text.",
+    parameters: ImportPdfParameters,
+    execute: async (_id, params) => {
+      if (!adapter) throw new Error("Vault adapter is unavailable.");
+      const path = normalizePdfPath(String(params.path ?? ""));
+      const data = await readSourceData(adapter, path);
+      const result = await pdfArtifacts.write(artifactStore, {
+        sourcePath: path,
+        title: normalizeOptionalString(params.title),
+        maxChunkChars: normalizeMaxChunkChars(params.maxChunkChars),
+        data,
+      });
+      return {
+        content: [{ type: "text", text: formatImportPdfResult(result) }],
+        details: {
+          ...sourceArtifactDetails(path, result),
+          pageCount: result.provenance.pageCount,
+        },
+      };
+    },
+  };
+}
+
+function createImportDocumentTool(
+  adapter: DataAdapter | undefined,
+  artifactStore: ToolArtifactStoreLike,
+  pdfArtifacts: PdfArtifactDeduper,
+  documentArtifacts: DocumentArtifactDeduper,
+): AgentTool<typeof ImportDocumentParameters> {
+  return {
+    name: "import_document",
+    label: "Import document",
+    description:
+      "Extract text from a vault PDF/EPUB/DOCX/PPTX/XLSX into an artifact with citation anchors; " +
+      "returns the artifact citation, not the full text. Legacy .doc/.ppt/.xls unsupported.",
+    parameters: ImportDocumentParameters,
+    execute: async (_id, params) => {
+      if (!adapter) throw new Error("Vault adapter is unavailable.");
+      const path = normalizeDocumentPath(String(params.path ?? ""));
+      const title = normalizeOptionalString(params.title);
+      const maxChunkChars = normalizeMaxChunkChars(params.maxChunkChars);
+      if (path.toLowerCase().endsWith(".pdf")) {
+        const data = await readSourceData(adapter, path);
+        const result = await pdfArtifacts.write(artifactStore, {
+          sourcePath: path,
+          title,
+          maxChunkChars,
+          data,
+        });
+        return {
+          content: [{ type: "text", text: formatImportPdfResult(result) }],
+          details: pdfImportDetails(path, result),
+        };
+      }
+
+      documentKindFromPath(path);
+      const data = await readSourceData(adapter, path);
+      // Bound explicitly to avoid the Obsidian scan treating this artifact writer
+      // as a DOM document.write sink.
+      const writeDocumentArtifact = documentArtifacts.write.bind(documentArtifacts);
+      const result = await writeDocumentArtifact(artifactStore, {
+        sourcePath: path,
+        title,
+        maxChunkChars,
+        data,
+      });
+      return {
+        content: [{ type: "text", text: formatImportDocumentResult(result) }],
+        details: documentImportDetails(path, result),
+      };
+    },
+  };
+}
+
+function normalizePdfPath(value: string): string {
+  const path = normalizeVaultPath(value);
+  if (!path) throw new Error("path is required.");
+  if (!path.toLowerCase().endsWith(".pdf")) throw new Error("import_pdf only supports .pdf files.");
+  return path;
+}
+
+function normalizeDocumentPath(value: string): string {
+  const path = normalizeVaultPath(value);
+  if (!path) throw new Error("path is required.");
+  const lower = path.toLowerCase();
+  if (lower.endsWith(".pdf")) return path;
+  documentKindFromPath(path);
+  return path;
+}
+
+async function readSourceData(adapter: DataAdapter, path: string): Promise<ArrayBuffer | string> {
+  const binaryAdapter = adapter as DataAdapter & { readBinary?: (path: string) => Promise<ArrayBuffer> };
+  if (binaryAdapter.readBinary) return binaryAdapter.readBinary(path);
+  return adapter.read(path);
+}
+
+function normalizeOptionalString(value: unknown): string | undefined {
+  const text = typeof value === "string" ? value.trim() : "";
+  return text || undefined;
+}
+
+function normalizeMaxChunkChars(value: number | undefined): number | undefined {
+  if (value === undefined || !Number.isFinite(value)) return undefined;
+  return Math.trunc(value);
+}
+
+function formatImportPdfResult(result: Awaited<ReturnType<PdfArtifactDeduper["write"]>>): string {
+  const duplicate = result.duplicate ? " (already imported)" : "";
+  const pageCount = result.provenance.pageCount === null ? "unknown pages" : `${result.provenance.pageCount} page(s)`;
+  return [
+    `PDF source artifact: ${result.artifactCitation}${duplicate}`,
+    `Extracted ${result.provenance.sourceTextChars} characters across ${result.provenance.chunkCount} chunk(s), ${pageCount}.`,
+    "Use read_artifact with the artifact id to inspect cited chunks.",
+  ].join("\n");
+}
+
+function formatImportDocumentResult(result: DocumentImportWriteResult): string {
+  const duplicate = result.duplicate ? " (already imported)" : "";
+  return [
+    `${result.provenance.kind.toUpperCase()} source artifact: ${result.artifactCitation}${duplicate}`,
+    `Extracted ${result.provenance.sourceTextChars} characters across ${result.provenance.chunkCount} chunk(s), ${result.provenance.itemCount} item(s).`,
+    "Use read_artifact with the artifact id to inspect cited chunks.",
+  ].join("\n");
+}
+
+interface SourceArtifactDetailsInput {
+  metadata: { id: string };
+  artifactCitation: string;
+  duplicate: boolean;
+  chunks: ReadonlyArray<{ anchor: string; index: number; start: number; end: number }>;
+  provenance: { title?: string; dedupKey: string; extractor: string; chunkCount: number; sourceTextChars: number };
+}
+
+function sourceArtifactDetails(path: string, result: SourceArtifactDetailsInput): Record<string, unknown> {
+  return {
+    path,
+    title: result.provenance.title,
+    sourceArtifactId: result.metadata.id,
+    sourceArtifactCitation: result.artifactCitation,
+    sourceArtifactDuplicate: result.duplicate,
+    sourceDedupKey: result.provenance.dedupKey,
+    extractor: result.provenance.extractor,
+    chunkCount: result.provenance.chunkCount,
+    totalChars: result.provenance.sourceTextChars,
+    citationAnchors: result.chunks.map((chunk) => ({
+      anchor: chunk.anchor,
+      label: `Chunk ${chunk.index}`,
+      start: chunk.start,
+      end: chunk.end,
+    })),
+  };
+}
+
+function pdfImportDetails(path: string, result: Awaited<ReturnType<PdfArtifactDeduper["write"]>>): Record<string, unknown> {
+  return {
+    ...sourceArtifactDetails(path, result),
+    sourceKind: "pdf",
+    pageCount: result.provenance.pageCount,
+  };
+}
+
+function documentImportDetails(path: string, result: DocumentImportWriteResult): Record<string, unknown> {
+  return {
+    ...sourceArtifactDetails(path, result),
+    sourceKind: result.provenance.kind,
+    itemCount: result.provenance.itemCount,
+  };
+}

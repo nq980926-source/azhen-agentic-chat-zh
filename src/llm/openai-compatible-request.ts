@@ -1,0 +1,650 @@
+import { requestUrl } from "obsidian";
+import {
+  createAssistantMessageEventStream,
+  getCurrentTools,
+  parseStreamingJson,
+  type Api,
+  type AssistantMessage,
+  type AssistantMessageEventStream,
+  type JsonObject,
+  type Model,
+  type ProviderStreams,
+  type SimpleStreamOptions,
+  type StopReason,
+  type Tool,
+  type ToolCall,
+  type TranscriptContext,
+  type Usage,
+} from "@earendil-works/pi-ai";
+import { convertMessages } from "@earendil-works/pi-ai/api/openai-completions";
+import type { WebFetcher } from "../tools/web-fetch";
+import { normalizeOpenAICompatibleApiBaseUrl } from "./models";
+import {
+  backoffDelayMs,
+  classifyError,
+  classifyHttpResponse,
+  sleep,
+  type ClassifiedError,
+} from "../agent/error-classifier";
+
+export interface OpenAICompatibleRequest {
+  url: string;
+  method?: "POST";
+  headers?: Record<string, string>;
+  body?: string;
+  contentType?: string;
+  throw?: boolean;
+  signal?: AbortSignal;
+}
+
+export interface OpenAICompatibleResponse {
+  status: number;
+  text: string;
+  json?: unknown;
+  headers?: Record<string, string>;
+}
+
+export type OpenAICompatibleRequester = (
+  request: OpenAICompatibleRequest,
+) => Promise<OpenAICompatibleResponse>;
+
+export function createOpenAICompatibleRequester(fetcher: WebFetcher): OpenAICompatibleRequester {
+  return async (request) => {
+    const headers = { ...request.headers };
+    if (request.contentType && !hasHeader(headers, "content-type")) {
+      headers["Content-Type"] = request.contentType;
+    }
+    const response = await fetcher(
+      {
+        url: request.url,
+        method: request.method ?? "POST",
+        headers,
+        body: request.body,
+      },
+      request.signal,
+    );
+    return {
+      status: response.status,
+      text: response.text,
+      headers: response.headers,
+      json: parseJsonMaybe(response.text),
+    };
+  };
+}
+
+type MessageCompat = Parameters<typeof convertMessages>[2];
+
+const MESSAGE_COMPAT: MessageCompat = {
+  supportsStore: false,
+  supportsDeveloperRole: false,
+  supportsReasoningEffort: false,
+  supportsUsageInStreaming: false,
+  supportsFinishReason: true,
+  maxTokensField: "max_tokens",
+  requiresToolResultName: false,
+  requiresAssistantAfterToolResult: false,
+  requiresThinkingAsText: false,
+  requiresReasoningContentOnAssistantMessages: false,
+  thinkingFormat: "openai",
+  chatTemplateKwargs: {},
+  chatTemplateArgs: {},
+  sessionAffinityFormat: "openai",
+  openRouterRouting: {},
+  vercelGatewayRouting: {},
+  zaiToolStream: false,
+  supportsStrictMode: false,
+  supportsOpenAIGrammarTools: false,
+  sendSessionAffinityHeaders: false,
+  supportsLongCacheRetention: false,
+};
+
+/**
+ * OpenAI-compatible desktop fallback over Obsidian's `requestUrl`.
+ *
+ * The OpenAI SDK/fetch path can run inside Obsidian's renderer, where CORS or
+ * Electron proxy handling can fail even when Node/curl can reach the same URL.
+ * `requestUrl` is Obsidian's own network primitive and is not subject to
+ * renderer CORS, so keep this scoped to self-hosted OpenAI-compatible gateways.
+ */
+export function streamOpenAICompatibleViaRequestUrl(
+  model: Model<"openai-completions">,
+  context: TranscriptContext,
+  options: SimpleStreamOptions | undefined,
+  requester: OpenAICompatibleRequester = defaultOpenAICompatibleRequester,
+): AssistantMessageEventStream {
+  const stream = createAssistantMessageEventStream();
+
+  void (async () => {
+    const output = createEmptyAssistantMessage(model);
+
+    try {
+      const apiKey = options?.apiKey?.trim();
+      if (!apiKey) throw new Error(`No API key for provider: ${model.provider}`);
+      throwIfRequestAborted(options?.signal);
+
+      let payload = buildPayload(model, context, options);
+      const nextPayload = await options?.onPayload?.(payload, model);
+      if (nextPayload !== undefined) payload = nextPayload as Record<string, unknown>;
+      throwIfRequestAborted(options?.signal);
+
+      const response = await requestCompletionWithRetries(
+        requester,
+        {
+          url: chatCompletionsUrl(model.baseUrl),
+          method: "POST",
+          contentType: "application/json",
+          headers: {
+            ...model.headers,
+            ...options?.headers,
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+          body: JSON.stringify(payload),
+          throw: false,
+          signal: options?.signal,
+        },
+        options,
+      );
+      throwIfRequestAborted(options?.signal);
+      await options?.onResponse?.({ status: response.status, headers: normalizeHeaders(response.headers) }, model);
+      throwIfRequestAborted(options?.signal);
+
+      if (response.status < 200 || response.status >= 300) {
+        throw new Error(formatStatusError(response));
+      }
+
+      const completion = parseCompletionResponse(response);
+      output.responseId = completion.responseId;
+      output.responseModel = completion.responseModel !== model.id ? completion.responseModel : undefined;
+      output.usage = completion.usage;
+      output.stopReason = completion.stopReason;
+      output.errorMessage = completion.errorMessage;
+
+      stream.push({ type: "start", partial: output });
+      if (options?.reasoning) emitThinking(stream, output, completion.thinking);
+      emitText(stream, output, completion.text);
+      for (const toolCall of completion.toolCalls) emitToolCall(stream, output, toolCall);
+
+      if (output.stopReason === "error") {
+        throw new Error(output.errorMessage || "Provider returned an error stop reason");
+      }
+      if (output.stopReason === "aborted") {
+        throw new Error("Request was aborted");
+      }
+
+      // `pending` only occurs on partial streaming messages; a completed
+      // non-streaming response always has a terminal reason. Map it defensively.
+      stream.push({ type: "done", reason: output.stopReason === "pending" ? "stop" : output.stopReason, message: output });
+      stream.end(output);
+    } catch (error) {
+      output.stopReason = options?.signal?.aborted ? "aborted" : "error";
+      output.errorMessage = errorMessage(error);
+      stream.push({ type: "error", reason: output.stopReason, error: output });
+      stream.end(output);
+    }
+  })();
+
+  return stream;
+}
+
+/**
+ * `ProviderStreams` implementation for custom providers whose requests must go
+ * through Obsidian's `requestUrl` (non-streaming) instead of fetch-based SSE.
+ */
+export function obsidianOpenAICompletionsApi(): ProviderStreams {
+  return {
+    stream: () => {
+      throw new Error("Raw streaming is not supported by the Obsidian requestUrl fallback; use streamSimple.");
+    },
+    streamSimple: (model: Model<Api>, context: TranscriptContext, options?: SimpleStreamOptions) =>
+      streamOpenAICompatibleViaRequestUrl(model as Model<"openai-completions">, context, options),
+  };
+}
+
+const defaultOpenAICompatibleRequester: OpenAICompatibleRequester = (request) => {
+  const { signal: _signal, ...obsidianRequest } = request;
+  return requestUrl(obsidianRequest);
+};
+
+async function requestCompletionWithRetries(
+  requester: OpenAICompatibleRequester,
+  request: OpenAICompatibleRequest,
+  options: SimpleStreamOptions | undefined,
+): Promise<OpenAICompatibleResponse> {
+  const maxRetries = Math.max(0, Math.floor(options?.maxRetries ?? 0));
+
+  async function attemptCompletion(attempt: number): Promise<OpenAICompatibleResponse> {
+    throwIfRequestAborted(options?.signal);
+    try {
+      const response = await performCompletionRequest(requester, request, options);
+      const decision = responseRetryDecision(response, attempt, maxRetries);
+      if (!decision) return response;
+      await waitForRetry(attempt, decision, options);
+    } catch (error) {
+      if (isRequestAbort(error, options)) throw error;
+      const decision = errorRetryDecision(error, attempt, maxRetries);
+      if (!decision) throw error;
+      await waitForRetry(attempt, decision, options);
+    }
+    return attemptCompletion(attempt + 1);
+  }
+
+  return attemptCompletion(0);
+}
+
+interface RetryDecision {
+  classified: ClassifiedError;
+  cause: unknown;
+}
+
+function isRequestAbort(error: unknown, options: SimpleStreamOptions | undefined): boolean {
+  return Boolean(options?.signal?.aborted) || error instanceof RequestAbortError;
+}
+
+async function performCompletionRequest(
+  requester: OpenAICompatibleRequester,
+  request: OpenAICompatibleRequest,
+  options: SimpleStreamOptions | undefined,
+): Promise<OpenAICompatibleResponse> {
+  const response = await withRequestGuards(requester(request), options?.timeoutMs, options?.signal);
+  throwIfRequestAborted(options?.signal);
+  return response;
+}
+
+function responseRetryDecision(
+  response: OpenAICompatibleResponse,
+  attempt: number,
+  maxRetries: number,
+): RetryDecision | undefined {
+  const classified = classifyHttpResponse(response.status, response.headers, extractErrorDetail(response) || response.text);
+  if (attempt >= maxRetries || !classified.retryable) return undefined;
+  return { classified, cause: classified };
+}
+
+function errorRetryDecision(error: unknown, attempt: number, maxRetries: number): RetryDecision | undefined {
+  const base = classifyError(error);
+  const classified: ClassifiedError = error instanceof RequestTimeoutError
+    ? { ...base, retryable: true, class: "transient" }
+    : base;
+  if (attempt >= maxRetries || !classified.retryable) return undefined;
+  return { classified, cause: error };
+}
+
+async function waitForRetry(
+  attempt: number,
+  decision: RetryDecision,
+  options: SimpleStreamOptions | undefined,
+): Promise<void> {
+  const delayMs = backoffDelayMs(attempt, decision.classified.retryAfterMs);
+  const maxRetryDelayMs = options?.maxRetryDelayMs;
+  if (maxRetryDelayMs !== undefined && maxRetryDelayMs > 0 && delayMs > maxRetryDelayMs) {
+    throw new Error(`Retry requested a ${delayMs}ms delay, exceeding maxRetryDelayMs=${maxRetryDelayMs}.`, { cause: decision.cause });
+  }
+  await sleep(delayMs, options?.signal);
+}
+
+export function isRetryableResponse(response: OpenAICompatibleResponse): boolean {
+  return classifyHttpResponse(response.status, response.headers, extractErrorDetail(response) || response.text).retryable;
+}
+
+function buildPayload(
+  model: Model<"openai-completions">,
+  context: TranscriptContext,
+  options: SimpleStreamOptions | undefined,
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {
+    model: model.id,
+    messages: convertMessages(model, context, MESSAGE_COMPAT),
+    stream: false,
+  };
+  const openRouterRouting = model.compat?.openRouterRouting;
+  if (openRouterRouting && Object.keys(openRouterRouting).length > 0) {
+    payload.provider = openRouterRouting;
+  }
+  if (options?.temperature !== undefined) payload.temperature = options.temperature;
+  if (options?.maxTokens && options.maxTokens > 0) payload.max_tokens = options.maxTokens;
+  // pi 1.0.0 moved the tool set into the transcript's system messages, so it
+  // is resolved by replay rather than read off `context.tools`.
+  const tools = getCurrentTools(context.messages);
+  if (tools.length > 0) {
+    payload.tools = convertTools(tools, MESSAGE_COMPAT);
+    const toolChoice = (options as { toolChoice?: unknown } | undefined)?.toolChoice;
+    if (toolChoice !== undefined) payload.tool_choice = toolChoice;
+  } else if (hasToolHistory(context)) {
+    // Some OpenAI-compatible gateways require the tools field on follow-up turns
+    // that replay assistant tool_calls or tool results.
+    payload.tools = [];
+  }
+  return payload;
+}
+
+function hasToolHistory(context: TranscriptContext): boolean {
+  for (const message of context.messages) {
+    if (message.role === "toolResult") return true;
+    if (message.role === "assistant" && message.content.some((block) => block.type === "toolCall")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function convertTools(tools: Tool[], compat: MessageCompat): Array<Record<string, unknown>> {
+  return tools.map((tool) => ({
+    type: "function",
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters,
+      ...(compat.supportsStrictMode !== false ? { strict: false } : {}),
+    },
+  }));
+}
+
+interface ParsedCompletion {
+  responseId?: string;
+  responseModel?: string;
+  text: string;
+  thinking: string;
+  toolCalls: ToolCall[];
+  usage: Usage;
+  stopReason: StopReason;
+  errorMessage?: string;
+}
+
+function parseCompletionResponse(response: OpenAICompatibleResponse): ParsedCompletion {
+  const payload = responseJson(response);
+  const choice = firstChoice(payload);
+  const message = recordValue(choice.message);
+  if (!message) throw new Error("Provider returned a choice without a message.");
+
+  const toolCalls = parseToolCalls(message.tool_calls);
+  const stop = mapStopReason(choice.finish_reason, toolCalls.length > 0);
+  return {
+    responseId: stringValue(payload.id),
+    responseModel: stringValue(payload.model),
+    text: textFromContent(message.content),
+    thinking: firstString(message.reasoning_content, message.reasoning, message.reasoning_text),
+    toolCalls,
+    usage: parseUsage(recordValue(payload.usage) ?? recordValue(choice.usage)),
+    stopReason: stop.stopReason,
+    errorMessage: stop.errorMessage,
+  };
+}
+
+function firstChoice(payload: Record<string, unknown>): Record<string, unknown> {
+  const choices = Array.isArray(payload.choices) ? payload.choices : [];
+  const choice = recordValue(choices[0]);
+  if (!choice) throw new Error("Provider returned no choices.");
+  return choice;
+}
+
+function responseJson(response: OpenAICompatibleResponse): Record<string, unknown> {
+  const parsed = recordValue(response.json);
+  if (parsed) return parsed;
+  try {
+    const fromText: unknown = JSON.parse(response.text);
+    const asRecord = recordValue(fromText);
+    if (asRecord) return asRecord;
+  } catch {
+    // Fall through to a clearer protocol error below.
+  }
+  throw new Error("Provider returned a non-JSON response.");
+}
+
+function parseToolCalls(rawToolCalls: unknown): ToolCall[] {
+  if (!Array.isArray(rawToolCalls)) return [];
+  return rawToolCalls.flatMap((raw, index) => {
+    const toolCall = recordValue(raw);
+    if (!toolCall) return [];
+    const fn = recordValue(toolCall.function);
+    const name = stringValue(fn?.name) || stringValue(toolCall.name) || `tool_${index + 1}`;
+    const args = parseToolArguments(fn?.arguments ?? toolCall.arguments);
+    return [
+      {
+        type: "toolCall" as const,
+        id: stringValue(toolCall.id) || `call_${index + 1}`,
+        name,
+        arguments: args,
+      },
+    ];
+  });
+}
+
+/**
+ * Tool arguments as a `JsonObject`.
+ *
+ * pi 1.0.0 narrowed `ToolCall.arguments` to `JsonObject`; the payload itself is
+ * already JSON-decoded, and pi validates it against the tool schema before
+ * execution. Keep the existing shape and only assert the type.
+ */
+function parseToolArguments(rawArguments: unknown): JsonObject {
+  if (recordValue(rawArguments)) return rawArguments as JsonObject;
+  if (typeof rawArguments !== "string") return {};
+  return parseStreamingJson<JsonObject>(rawArguments);
+}
+
+function textFromContent(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((part) => {
+      const block = recordValue(part);
+      if (!block) return "";
+      if (typeof block.text === "string") return block.text;
+      return "";
+    })
+    .join("");
+}
+
+function parseUsage(rawUsage: Record<string, unknown> | undefined): Usage {
+  const promptTokens = numberValue(rawUsage?.prompt_tokens);
+  const promptDetails = recordValue(rawUsage?.prompt_tokens_details);
+  const cacheReadTokens = numberValue(promptDetails?.cached_tokens) || numberValue(rawUsage?.prompt_cache_hit_tokens);
+  const cacheWriteTokens = numberValue(promptDetails?.cache_write_tokens);
+  const outputTokens = numberValue(rawUsage?.completion_tokens);
+  const inputTokens = Math.max(0, promptTokens - cacheReadTokens - cacheWriteTokens);
+  return {
+    input: inputTokens,
+    output: outputTokens,
+    cacheRead: cacheReadTokens,
+    cacheWrite: cacheWriteTokens,
+    totalTokens: numberValue(rawUsage?.total_tokens) || inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  };
+}
+
+function mapStopReason(reason: unknown, hasToolCalls: boolean): { stopReason: StopReason; errorMessage?: string } {
+  if (hasToolCalls) return { stopReason: "toolUse" };
+  if (reason === null || reason === undefined || reason === "stop" || reason === "end") return { stopReason: "stop" };
+  if (reason === "length") return { stopReason: "length" };
+  if (reason === "function_call" || reason === "tool_calls") return { stopReason: "toolUse" };
+  if (reason === "content_filter") {
+    return { stopReason: "error", errorMessage: "Provider finish_reason: content_filter" };
+  }
+  if (reason === "network_error") {
+    return { stopReason: "error", errorMessage: "Provider finish_reason: network_error" };
+  }
+  return { stopReason: "error", errorMessage: `Provider finish_reason: ${stringFromUnknown(reason)}` };
+}
+
+function stringFromUnknown(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (
+    typeof value === "number" ||
+    typeof value === "boolean" ||
+    typeof value === "bigint" ||
+    typeof value === "symbol"
+  ) {
+    return value.toString();
+  }
+  try {
+    const json = JSON.stringify(value);
+    return json ?? Object.prototype.toString.call(value);
+  } catch {
+    return Object.prototype.toString.call(value);
+  }
+}
+
+function createEmptyAssistantMessage(model: Model<"openai-completions">): AssistantMessage {
+  return {
+    role: "assistant",
+    content: [],
+    api: model.api,
+    provider: model.provider,
+    model: model.id,
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "stop",
+    timestamp: Date.now(),
+  };
+}
+
+function emitText(stream: AssistantMessageEventStream, output: AssistantMessage, text: string): void {
+  if (!text) return;
+  const block = { type: "text" as const, text };
+  output.content.push(block);
+  const contentIndex = output.content.length - 1;
+  stream.push({ type: "text_start", contentIndex, partial: output });
+  stream.push({ type: "text_delta", contentIndex, delta: text, partial: output });
+  stream.push({ type: "text_end", contentIndex, content: text, partial: output });
+}
+
+function emitThinking(stream: AssistantMessageEventStream, output: AssistantMessage, thinking: string): void {
+  if (!thinking) return;
+  const block = { type: "thinking" as const, thinking, thinkingSignature: "reasoning_content" };
+  output.content.push(block);
+  const contentIndex = output.content.length - 1;
+  stream.push({ type: "thinking_start", contentIndex, partial: output });
+  stream.push({ type: "thinking_delta", contentIndex, delta: thinking, partial: output });
+  stream.push({ type: "thinking_end", contentIndex, content: thinking, partial: output });
+}
+
+function emitToolCall(stream: AssistantMessageEventStream, output: AssistantMessage, toolCall: ToolCall): void {
+  output.content.push(toolCall);
+  const contentIndex = output.content.length - 1;
+  const delta = JSON.stringify(toolCall.arguments);
+  stream.push({ type: "toolcall_start", contentIndex, partial: output });
+  stream.push({ type: "toolcall_delta", contentIndex, delta, partial: output });
+  stream.push({ type: "toolcall_end", contentIndex, toolCall, partial: output });
+}
+
+function chatCompletionsUrl(baseUrl: string): string {
+  const normalized = normalizeOpenAICompatibleApiBaseUrl(baseUrl);
+  if (/\/chat\/completions$/i.test(normalized)) return normalized;
+  return `${normalized}/chat/completions`;
+}
+
+async function withRequestGuards<T>(
+  promise: Promise<T>,
+  timeoutMs: number | undefined,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  if (signal?.aborted) throw new RequestAbortError();
+  let timer: number | undefined;
+  let abortListener: (() => void) | undefined;
+  const race: Array<Promise<T>> = [promise];
+  if (timeoutMs && timeoutMs > 0) {
+    race.push(
+      new Promise<T>((_, reject) => {
+        timer = window.setTimeout(() => reject(new RequestTimeoutError()), timeoutMs);
+      }),
+    );
+  }
+  if (signal) {
+    race.push(
+      new Promise<T>((_, reject) => {
+        abortListener = () => reject(new RequestAbortError());
+        signal.addEventListener("abort", abortListener, { once: true });
+      }),
+    );
+  }
+  try {
+    return await Promise.race(race);
+  } finally {
+    if (timer !== undefined) window.clearTimeout(timer);
+    if (signal && abortListener) signal.removeEventListener("abort", abortListener);
+  }
+}
+
+function throwIfRequestAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new RequestAbortError();
+}
+
+class RequestTimeoutError extends Error {
+  constructor() {
+    super("Request timed out.");
+  }
+}
+
+class RequestAbortError extends Error {
+  constructor() {
+    super("Request was aborted.");
+  }
+}
+
+function normalizeHeaders(headers: Record<string, string> | undefined): Record<string, string> {
+  const normalized: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers ?? {})) normalized[key.toLowerCase()] = String(value);
+  return normalized;
+}
+
+function formatStatusError(response: OpenAICompatibleResponse): string {
+  const detail = extractErrorDetail(response);
+  const suffix = detail ? `: ${detail}` : ".";
+  return `OpenAI-compatible request failed (status ${response.status})${suffix}`;
+}
+
+function extractErrorDetail(response: OpenAICompatibleResponse): string {
+  const payload = recordValue(response.json);
+  const error = recordValue(payload?.error);
+  const detail =
+    stringValue(error?.message) ||
+    stringValue(payload?.detail) ||
+    stringValue(payload?.message) ||
+    stringValue(payload?.error);
+  if (detail) return detail;
+  return (response.text ?? "").replace(/\s+/g, " ").trim().slice(0, 500);
+}
+
+function firstString(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return "";
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function numberValue(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function parseJsonMaybe(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}
+
+function hasHeader(headers: Record<string, string>, target: string): boolean {
+  return Object.keys(headers).some((key) => key.toLowerCase() === target.toLowerCase());
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}

@@ -1,0 +1,1904 @@
+import { describe, expect, it } from "vitest";
+import { TFile, TFolder, type App } from "obsidian";
+import type { AssistantMessage, Model, TranscriptContext } from "@earendil-works/pi-ai";
+import type { AgentMessage, StreamFn } from "@earendil-works/pi-agent-core";
+import { createAssistantMessageEventStream, getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai";
+import { AgentService } from "../src/agent/agent-service";
+import type { AgentCompactionRuntime } from "../src/agent/compaction-runtime";
+import { STOPPED_APPROVAL_REASON, type UserApprovalChoice } from "../src/agent/tool-call-controller";
+import type { AskUserHandler, AskUserRequest } from "../src/tools/ask-user-tool";
+import { isSummaryMessage } from "../src/agent/compaction";
+import { ObsidianSessionManager } from "../src/session/session-manager";
+import { DEFAULT_SETTINGS, type AgenticChatSettings } from "../src/settings";
+import type { WebFetcher, WebHttpRequest } from "../src/tools/web-fetch";
+import { parseSessionEntries, serializeSessionEntries } from "../src/session/jsonl";
+import { MemoryAdapter } from "./helpers/memory-adapter";
+import { fakeMemoryJsonl } from "./helpers/memory-fixtures";
+import { FakeVault } from "./helpers/fake-vault";
+
+const MEMORY_PATH = ".obsidian/plugins/agentic-chat/memory/memories.jsonl";
+
+/** Stream function that returns a fixed assistant reply without any network. */
+function cannedStreamFn(text: string): StreamFn {
+  return ((model: Model<"openai-completions">) => {
+    const stream = createAssistantMessageEventStream();
+    const message = {
+      role: "assistant" as const,
+      content: [{ type: "text" as const, text }],
+      api: model.api,
+      provider: model.provider,
+      model: model.id,
+      usage: {
+        input: 5,
+        output: 7,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 12,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop" as const,
+      timestamp: Date.now(),
+    };
+    queueMicrotask(() => {
+      stream.push({ type: "start", partial: { ...message, content: [] } });
+      stream.push({ type: "done", reason: "stop", message });
+      stream.end(message);
+    });
+    return stream;
+  }) as unknown as StreamFn;
+}
+
+/** Stream function that scripts one assistant message per agent turn. */
+function scriptedStreamFn(
+  turns: Array<{ content: AssistantMessage["content"]; stopReason: "stop" | "toolUse" }>,
+): StreamFn {
+  let turn = 0;
+  return ((model: Model<"openai-completions">) => {
+    const stream = createAssistantMessageEventStream();
+    const spec = turns[Math.min(turn, turns.length - 1)];
+    turn += 1;
+    const message = {
+      role: "assistant" as const,
+      content: spec.content,
+      api: model.api,
+      provider: model.provider,
+      model: model.id,
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: spec.stopReason,
+      timestamp: Date.now(),
+    };
+    queueMicrotask(() => {
+      stream.push({ type: "start", partial: { ...message, content: [] } });
+      stream.push({ type: "done", reason: spec.stopReason, message });
+      stream.end(message);
+    });
+    return stream;
+  }) as unknown as StreamFn;
+}
+
+/** Scripts one assistant message per turn, each carrying a USD cost. */
+function scriptedCostStreamFn(
+  turns: Array<{ content: AssistantMessage["content"]; stopReason: "stop" | "toolUse"; costTotal: number }>,
+): StreamFn {
+  let turn = 0;
+  return ((model: Model<"openai-completions">) => {
+    const stream = createAssistantMessageEventStream();
+    const spec = turns[Math.min(turn, turns.length - 1)];
+    turn += 1;
+    const message = {
+      role: "assistant" as const,
+      content: spec.content,
+      api: model.api,
+      provider: model.provider,
+      model: model.id,
+      usage: {
+        input: 100,
+        output: 50,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 150,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: spec.costTotal },
+      },
+      stopReason: spec.stopReason,
+      timestamp: Date.now(),
+    };
+    queueMicrotask(() => {
+      stream.push({ type: "start", partial: { ...message, content: [] } });
+      stream.push({ type: "done", reason: spec.stopReason, message });
+      stream.end(message);
+    });
+    return stream;
+  }) as unknown as StreamFn;
+}
+
+interface ControlledStreamRun {
+  context: TranscriptContext;
+  finish: () => void;
+}
+
+function controlledStreamFn(
+  responses: string[],
+  costTotal = 0,
+): { streamFn: StreamFn; runs: ControlledStreamRun[] } {
+  const runs: ControlledStreamRun[] = [];
+  const streamFn = ((model: Model<"openai-completions">, context: TranscriptContext, options?: { signal?: AbortSignal }) => {
+    const stream = createAssistantMessageEventStream();
+    const responseText = responses[Math.min(runs.length, responses.length - 1)] ?? "";
+    const message = assistantMessage(model, responseText, "stop", costTotal);
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      stream.push({ type: "start", partial: { ...message, content: [] } });
+      stream.push({ type: "done", reason: "stop", message });
+      stream.end(message);
+    };
+    const abort = () => {
+      if (settled) return;
+      settled = true;
+      const aborted = {
+        ...message,
+        content: [],
+        stopReason: "aborted" as const,
+        errorMessage: "Request was aborted",
+      };
+      stream.push({ type: "error", reason: "aborted", error: aborted });
+      stream.end(aborted);
+    };
+    runs.push({ context, finish });
+    if (options?.signal?.aborted) abort();
+    else options?.signal?.addEventListener("abort", abort, { once: true });
+    return stream;
+  }) as unknown as StreamFn;
+  return { streamFn, runs };
+}
+
+function assistantMessage(
+  model: Model<"openai-completions">,
+  text: string,
+  stopReason: AssistantMessage["stopReason"],
+  costTotal = 0,
+): AssistantMessage {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text }],
+    api: model.api,
+    provider: model.provider,
+    model: model.id,
+    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: costTotal } },
+    stopReason,
+    timestamp: Date.now(),
+  };
+}
+
+async function waitFor(predicate: () => boolean, label: string): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error(`Timed out waiting for ${label}`);
+}
+
+function userTexts(messages: readonly AgentMessage[]): string[] {
+  return messages
+    .filter((message): message is Extract<AgentMessage, { role: "user" }> => message.role === "user")
+    .map((message) => contentText(message.content));
+}
+
+function contentText(content: Extract<AgentMessage, { role: "user" }>["content"]): string {
+  if (typeof content === "string") return content;
+  return content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+}
+
+async function persistedMessageRoles(adapter: MemoryAdapter, service: AgentService): Promise<string[]> {
+  const path = service.getSessionInfo()?.path;
+  if (!path) throw new Error("No active session path.");
+  const entries = parseSessionEntries(await adapter.read(path));
+  return entries.filter((entry) => entry.type === "message").map((entry) => entry.message.role);
+}
+
+async function persistedActionAuditEvents(adapter: MemoryAdapter, service: AgentService) {
+  const path = service.getSessionInfo()?.path;
+  if (!path) throw new Error("No active session path.");
+  return parseSessionEntries(await adapter.read(path))
+    .filter((entry) => entry.type === "action_audit")
+    .map((entry) => entry.event);
+}
+
+function makeService(
+  streamFn: StreamFn,
+  confirmToolCall: () => Promise<UserApprovalChoice> = async () => ({ approved: true, remember: false }),
+  app: App = minimalApp(),
+  askUser?: AskUserHandler,
+  observabilityFetch?: WebFetcher,
+): {
+  service: AgentService;
+  adapter: MemoryAdapter;
+  settings: AgenticChatSettings;
+  sessionManager: ObsidianSessionManager;
+} {
+  const settings: AgenticChatSettings = { ...DEFAULT_SETTINGS, openrouterApiKey: "test-key" };
+  const adapter = new MemoryAdapter();
+  const sessionManager = new ObsidianSessionManager(adapter.asDataAdapter(), "sessions", "vault:test");
+  const service = new AgentService({
+    app,
+    getSettings: () => settings,
+    sessionManager,
+    confirmToolCall,
+    askUser,
+    streamFn,
+    observabilityFetch,
+  });
+  return { service, adapter, settings, sessionManager };
+}
+
+function minimalApp(): App {
+  return { vault: { on: () => ({}), offref: () => {} }, workspace: {} } as unknown as App;
+}
+
+function vaultBackedApp(): { app: App; vault: FakeVault } {
+  const vault = new FakeVault() as FakeVault & {
+    getFolderByPath: (path: string) => TFolder | null;
+    on: () => Record<string, never>;
+    offref: () => void;
+  };
+  vault.getFolderByPath = (path) => {
+    const entry = vault.getAbstractFileByPath(path);
+    return entry instanceof TFolder ? entry : null;
+  };
+  vault.on = () => ({});
+  vault.offref = () => {};
+  return {
+    app: {
+      vault,
+      workspace: {},
+      fileManager: {
+        trashFile: async (file: TFile) => vault.trash(file),
+      },
+    } as unknown as App,
+    vault,
+  };
+}
+
+describe("AgentService", () => {
+  it("runs a prompt, exposes the transcript, and tracks usage", async () => {
+    const { service } = makeService(cannedStreamFn("Hello from the agent."));
+    await service.sendPrompt("Say hello");
+
+    const roles = service.getMessages().map((message) => message.role);
+    expect(roles).toEqual(["user", "assistant"]);
+    expect(service.getSessionUsage().totalTokens).toBe(12);
+    expect(service.getError()).toBeUndefined();
+    expect(service.isStreaming()).toBe(false);
+  });
+
+  it("exports opt-in observability traces through the injected fetcher", async () => {
+    const requests: WebHttpRequest[] = [];
+    const fetcher: WebFetcher = async (request) => {
+      requests.push(request);
+      return { status: 200, text: "", headers: {} };
+    };
+    const { service, settings } = makeService(cannedStreamFn("Hello from the agent."), async () => ({ approved: true, remember: false }), minimalApp(), undefined, fetcher);
+    settings.observability = {
+      ...DEFAULT_SETTINGS.observability,
+      enabled: true,
+      backend: "otlp",
+      endpoint: "https://otel.corp.example/v1/traces",
+      payloadMode: "metadata",
+    };
+
+    await service.sendPrompt("Say hello with private text");
+    await waitFor(() => requests.length === 1, "observability export");
+
+    expect(requests[0].url).toBe("https://otel.corp.example/v1/traces");
+    const body = JSON.parse(requests[0].body ?? "{}") as { resourceSpans: Array<{ scopeSpans: Array<{ spans: Array<{ name: string }> }> }> };
+    expect(body.resourceSpans[0].scopeSpans[0].spans.map((span) => span.name)).toContain("agentic.turn");
+    expect(body.resourceSpans[0].scopeSpans[0].spans.map((span) => span.name)).toContain("llm.generation");
+    expect(JSON.stringify(body)).not.toContain("private text");
+    await waitFor(
+      () => service.getRuntimeDiagnostics().observability.exportHealth.successfulExports === 1,
+      "observability health",
+    );
+    expect(service.getRuntimeDiagnostics().observability.exportHealth).toMatchObject({
+      attemptedExports: 1,
+      successfulExports: 1,
+      failedExports: 0,
+      lastStatus: 200,
+    });
+  });
+
+  it("applies a one-shot model override to the next prompt only, then reverts", async () => {
+    const seen: string[] = [];
+    const base = cannedStreamFn("ok");
+    const streamFn: StreamFn = ((model: Model<"openai-completions">, context: unknown, options: unknown) => {
+      seen.push(model.id);
+      return (base as (...args: unknown[]) => unknown)(model, context, options);
+    }) as unknown as StreamFn;
+    const { service, settings } = makeService(streamFn);
+
+    service.setModelOverride("anthropic/claude-3.5-sonnet");
+    expect(service.getModelOverride()).toBe("anthropic/claude-3.5-sonnet");
+    expect(service.getActiveModelId()).toBe("anthropic/claude-3.5-sonnet");
+    await service.sendPrompt("first");
+    // The override was consumed by the turn it was set for.
+    expect(service.getModelOverride()).toBeNull();
+    expect(service.getActiveModelId()).toBe(settings.openrouterModel);
+
+    await service.sendPrompt("second");
+    expect(seen).toEqual(["anthropic/claude-3.5-sonnet", settings.openrouterModel]);
+  });
+
+  it("keeps two tab services over one sessions dir independent", async () => {
+    // Mirrors the C3 tab model: each tab is its own AgentService with its own
+    // session manager, but they share the plugin's sessions directory.
+    const adapter = new MemoryAdapter();
+    const settings: AgenticChatSettings = { ...DEFAULT_SETTINGS, openrouterApiKey: "test-key" };
+    const makeTab = () =>
+      new AgentService({
+        app: { vault: { on: () => ({}), offref: () => {} }, workspace: {} } as unknown as App,
+        getSettings: () => settings,
+        sessionManager: new ObsidianSessionManager(adapter.asDataAdapter(), "sessions", "vault:test"),
+        confirmToolCall: async () => ({ approved: true, remember: false }),
+        streamFn: cannedStreamFn("reply"),
+      });
+
+    const tab1 = makeTab();
+    await tab1.sendPrompt("first tab message");
+
+    const tab2 = makeTab();
+    await tab2.newSession(); // a new tab is always a fresh session, not a continuation
+    await tab2.sendPrompt("second tab message");
+
+    // Two distinct session files, each holding only its own conversation.
+    const files = [...adapter.files.keys()].filter((path) => path.endsWith(".jsonl"));
+    expect(files.length).toBe(2);
+    const contents = files.map((path) => adapter.files.get(path) as string);
+    expect(contents.some((c) => c.includes("first tab message") && !c.includes("second tab message"))).toBe(true);
+    expect(contents.some((c) => c.includes("second tab message") && !c.includes("first tab message"))).toBe(true);
+    expect(tab1.getMessages().map((m) => m.role)).toEqual(["user", "assistant"]);
+    expect(tab2.getMessages().map((m) => m.role)).toEqual(["user", "assistant"]);
+  });
+
+  it("persists the conversation to a JSONL session file", async () => {
+    const { service, adapter } = makeService(cannedStreamFn("Persisted reply."));
+    await service.sendPrompt("Remember this");
+
+    const sessionFile = [...adapter.files.keys()].find((path) => path.endsWith(".jsonl"));
+    expect(sessionFile).toBeDefined();
+    const entries = parseSessionEntries(adapter.files.get(sessionFile as string) as string);
+    const messageEntries = entries.filter((entry) => entry.type === "message");
+    expect(messageEntries).toHaveLength(2);
+  });
+
+  it("initialize continues the most recent persisted session", async () => {
+    const first = makeService(cannedStreamFn("Persisted first reply."));
+    await first.service.sendPrompt("first persisted prompt");
+    const firstPath = first.service.getSessionInfo()?.path;
+    expect(firstPath).toBeDefined();
+
+    const secondSessionManager = new ObsidianSessionManager(first.adapter.asDataAdapter(), "sessions", "vault:test");
+    const second = new AgentService({
+      app: minimalApp(),
+      getSettings: () => first.settings,
+      sessionManager: secondSessionManager,
+      confirmToolCall: async () => ({ approved: true, remember: false }),
+      streamFn: cannedStreamFn("unused"),
+    });
+
+    await second.initialize();
+    expect(second.getSessionInfo()?.path).toBe(firstPath);
+    expect(second.getMessages().map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(second.getMessages().some((message) => JSON.stringify(message).includes("first persisted prompt"))).toBe(true);
+  });
+
+  it("does not send a prompt prepared against a different session token", async () => {
+    const controlled = controlledStreamFn(["late answer"]);
+    const { service } = makeService(controlled.streamFn);
+
+    await service.initialize();
+    const sessionToken = service.getSessionToken();
+    await service.newSession();
+    await service.sendPrompt("stale prompt", undefined, sessionToken);
+
+    expect(controlled.runs).toHaveLength(0);
+    expect(service.getError()).toMatch(/session changed while preparing this turn/i);
+    expect(service.getMessages()).toEqual([]);
+  });
+
+  it("refreshes resources and tool registration before each prompt", async () => {
+    const seenTools: string[][] = [];
+    const base = cannedStreamFn("ok");
+    // pi 1.0.0 hands stream functions a `TranscriptContext`: the tool set is
+    // replayed out of the transcript's system messages rather than read from
+    // a `context.tools` field.
+    const streamFn: StreamFn = ((model: Model<"openai-completions">, context: TranscriptContext, options: unknown) => {
+      seenTools.push(getCurrentTools(context.messages).map((tool) => tool.name).sort());
+      return (base as (...args: unknown[]) => unknown)(model, context, options);
+    }) as unknown as StreamFn;
+    const { service, settings } = makeService(streamFn);
+
+    settings.web = { ...settings.web, enabled: false };
+    await service.sendPrompt("without web");
+    settings.web = { ...settings.web, enabled: true };
+    await service.sendPrompt("with web");
+
+    expect(seenTools[0]).not.toContain("web_search");
+    expect(seenTools[0]).not.toContain("fetch_url");
+    expect(seenTools[1]).toContain("web_search");
+    expect(seenTools[1]).toContain("fetch_url");
+  });
+
+  it("registers memory search without silently injecting stored memories into prompts", async () => {
+    const memoryAdapter = new MemoryAdapter();
+    await memoryAdapter.write(MEMORY_PATH, fakeMemoryJsonl());
+    const base = cannedStreamFn("ok");
+    let seenContext: TranscriptContext | undefined;
+    const streamFn: StreamFn = ((model: Model<"openai-completions">, context: TranscriptContext, options: unknown) => {
+      seenContext = context;
+      return (base as (...args: unknown[]) => unknown)(model, context, options);
+    }) as unknown as StreamFn;
+    const app = {
+      vault: {
+        adapter: memoryAdapter.asDataAdapter(),
+        configDir: ".obsidian",
+        on: () => ({}),
+        offref: () => {},
+      },
+      workspace: {},
+    } as unknown as App;
+    const { service } = makeService(streamFn, async () => ({ approved: true, remember: false }), app);
+
+    await service.sendPrompt("Use the normal prompt context");
+
+    expect(seenContext).toBeDefined();
+    expect(getCurrentTools(seenContext!.messages).map((tool) => tool.name)).toContain("search_memory");
+    // pi 1.0.0 carries the prompt as a transcript system message, so serialize
+    // the replayed prompt rather than a `systemPrompt` field.
+    const serializedContext = JSON.stringify({
+      systemPrompt: getCurrentSystemPrompt(seenContext!.messages),
+      messages: seenContext!.messages,
+    });
+    expect(serializedContext).not.toContain("The user prefers concise answers");
+    expect(serializedContext).not.toContain("Large vault embedding generation");
+  });
+
+  it("runs ask_user through the registered UI handler and continues", async () => {
+    const streamFn = scriptedStreamFn([
+      {
+        content: [
+          {
+            type: "toolCall",
+            id: "call-1",
+            name: "ask_user",
+            arguments: { question: "Which folder should I use?", choices: ["Notes", "Archive"] },
+          },
+        ],
+        stopReason: "toolUse",
+      },
+      { content: [{ type: "text", text: "I will use Notes." }], stopReason: "stop" },
+    ]);
+    let asked: AskUserRequest | undefined;
+    const { service } = makeService(streamFn, async () => ({ approved: true, remember: false }), minimalApp(), async (request) => {
+      asked = request;
+      return "Notes";
+    });
+
+    await service.sendPrompt("Organize this note");
+
+    expect(asked).toEqual({ question: "Which folder should I use?", choices: ["Notes", "Archive"] });
+    const toolResult = service.getMessages().find((message) => message.role === "toolResult") as
+      | { role: "toolResult"; isError: boolean; content: Array<{ type: string; text?: string }> }
+      | undefined;
+    expect(toolResult?.isError).toBe(false);
+    expect((toolResult?.content ?? []).map((block) => block.text ?? "").join("")).toContain("User answered: Notes");
+    expect(service.getMessages().filter((message) => message.role === "assistant")).toHaveLength(2);
+  });
+
+  it("clears session-local undo state when starting a new session", async () => {
+    const { app, vault } = vaultBackedApp();
+    const streamFn = scriptedStreamFn([
+      { content: [{ type: "toolCall", id: "call-1", name: "write", arguments: { path: "Undo/New.md", content: "created" } }], stopReason: "toolUse" },
+      { content: [{ type: "text", text: "Wrote it." }], stopReason: "stop" },
+    ]);
+    const { service } = makeService(streamFn, async () => ({ approved: true, remember: false }), app);
+
+    await service.sendPrompt("create undoable note");
+    expect(vault.contentOf("Undo/New.md")).toBe("created");
+    expect(service.canUndo()).toBe(true);
+
+    await service.newSession();
+    expect(service.canUndo()).toBe(false);
+    expect(await service.undoLastChange()).toBe("Nothing to undo.");
+  });
+
+  // pi 1.5.0 only emits system messages when the tool set changes; the seeded
+  // prompt is never persisted. Toggle web tools between prompts to exercise the
+  // real tool-change delta path.
+  it("keeps pi's system-context messages out of the session file", async () => {
+    const { adapter, service, settings } = makeService(scriptedStreamFn([
+      { content: [{ type: "text", text: "Reply." }], stopReason: "stop" },
+      { content: [{ type: "text", text: "Reply again." }], stopReason: "stop" },
+    ]));
+    // Pin the premise: toggling web tools must actually emit pi's tool-change
+    // system message. Without this assertion the persistence checks below pass
+    // vacuously if pi stops emitting the delta.
+    const systemMessages: AgentMessage[] = [];
+    const offEvent = service.onEvent((event) => {
+      if (event.type === "message_end" && event.message.role === "system") {
+        systemMessages.push(event.message);
+      }
+    });
+
+    settings.web = { ...settings.web, enabled: false };
+    await service.sendPrompt("without web");
+    settings.web = { ...settings.web, enabled: true };
+    await service.sendPrompt("with web");
+    offEvent();
+
+    expect(systemMessages.length).toBeGreaterThan(0);
+    expect(
+      systemMessages.some(
+        (message) => message.role === "system" && (message.toolsAdded?.length ?? 0) > 0,
+      ),
+    ).toBe(true);
+    expect(service.getMessages().map((message) => message.role)).toEqual(["user", "assistant", "user", "assistant"]);
+    expect(await persistedMessageRoles(adapter, service)).toEqual(["user", "assistant", "user", "assistant"]);
+  });
+
+  it("clears session-local state when loading another session", async () => {
+    const { app, vault } = vaultBackedApp();
+    const streamFn = scriptedStreamFn([
+      { content: [{ type: "text", text: "First session reply." }], stopReason: "stop" },
+      { content: [{ type: "toolCall", id: "call-1", name: "write", arguments: { path: "Undo/Load.md", content: "created" } }], stopReason: "toolUse" },
+      { content: [{ type: "text", text: "Wrote it." }], stopReason: "stop" },
+    ]);
+    const { service, adapter } = makeService(streamFn, async () => ({ approved: true, remember: false }), app);
+
+    await service.sendPrompt("keep this session");
+    const firstPath = service.getSessionInfo()?.path as string;
+    expect(parseSessionEntries(adapter.files.get(firstPath) as string).filter((entry) => entry.type === "message")).toHaveLength(2);
+
+    await service.newSession();
+    await service.sendPrompt("create undoable note before loading");
+    expect(vault.contentOf("Undo/Load.md")).toBe("created");
+    expect(service.canUndo()).toBe(true);
+
+    await service.loadSession(firstPath);
+    expect(service.getMessages().some((message) => JSON.stringify(message).includes("keep this session"))).toBe(true);
+    expect(service.canUndo()).toBe(false);
+    expect(await service.undoLastChange()).toBe("Nothing to undo.");
+
+    await service.sendPrompt("continue loaded session");
+    const messageEntries = parseSessionEntries(adapter.files.get(firstPath) as string).filter((entry) => entry.type === "message");
+    expect(messageEntries).toHaveLength(4);
+    expect(messageEntries.filter((entry) => JSON.stringify(entry.message).includes("keep this session"))).toHaveLength(1);
+  });
+
+  it("clears session-local undo state when truncating messages", async () => {
+    const { app, vault } = vaultBackedApp();
+    const streamFn = scriptedStreamFn([
+      { content: [{ type: "toolCall", id: "call-1", name: "write", arguments: { path: "Undo/Rewind.md", content: "created" } }], stopReason: "toolUse" },
+      { content: [{ type: "text", text: "Wrote it." }], stopReason: "stop" },
+    ]);
+    const { service } = makeService(streamFn, async () => ({ approved: true, remember: false }), app);
+
+    await service.sendPrompt("create undoable note");
+    expect(vault.contentOf("Undo/Rewind.md")).toBe("created");
+    expect(service.canUndo()).toBe(true);
+
+    await service.truncateMessages(1);
+    expect(service.getMessages().map((message) => message.role)).toEqual(["user"]);
+    expect(service.canUndo()).toBe(false);
+    expect(await service.undoLastChange()).toBe("Nothing to undo.");
+  });
+
+  it("sends a denial result back to the model when the user declines a tool call", async () => {
+    const streamFn = scriptedStreamFn([
+      { content: [{ type: "toolCall", id: "call-1", name: "write", arguments: { path: "note.md", content: "hi" } }], stopReason: "toolUse" },
+      { content: [{ type: "text", text: "Understood, I won't write it." }], stopReason: "stop" },
+    ]);
+    const { service } = makeService(streamFn, async () => ({ approved: false, remember: false }));
+    await service.sendPrompt("Create note.md");
+
+    const messages = service.getMessages();
+    const toolResult = messages.find((message) => message.role === "toolResult") as
+      | { role: "toolResult"; isError: boolean; content: Array<{ type: string; text?: string }> }
+      | undefined;
+    expect(toolResult).toBeDefined();
+    expect(toolResult?.isError).toBe(true);
+    const resultText = (toolResult?.content ?? []).map((block) => block.text ?? "").join("");
+    expect(resultText).toMatch(/declined/i);
+    // The model received the denial and produced a follow-up turn.
+    expect(messages.filter((message) => message.role === "assistant")).toHaveLength(2);
+  });
+
+  it("does not execute prepared sibling tool calls after the user stops a batch", async () => {
+    const streamFn = scriptedStreamFn([
+      {
+        content: [
+          { type: "toolCall", id: "call-1", name: "read", arguments: { path: "Other/first.md" } },
+          { type: "toolCall", id: "call-2", name: "read", arguments: { path: "Other/second.md" } },
+        ],
+        stopReason: "toolUse",
+      },
+      { content: [{ type: "text", text: "follow-up turn must not run" }], stopReason: "stop" },
+    ]);
+    const { app, vault } = vaultBackedApp();
+    await vault.createFolder("Other");
+    await vault.create("Other/first.md", "first file body");
+    await vault.create("Other/second.md", "second file body");
+    let confirmCalls = 0;
+    const { service, settings } = makeService(
+      streamFn,
+      async () => {
+        confirmCalls += 1;
+        if (confirmCalls === 1) return { approved: true, remember: false };
+        return { approved: false, remember: false, reason: STOPPED_APPROVAL_REASON, stopped: true };
+      },
+      app,
+    );
+    // Reads outside the granted working set are ask-gated and run in parallel.
+    settings.mode = "safe";
+    settings.approval = { mutating: "ask", perTool: {}, workingDirs: ["Notes"] };
+
+    await service.sendPrompt("read two files");
+
+    expect(confirmCalls).toBe(2);
+    const toolResults = service.getMessages().filter((message) => message.role === "toolResult");
+    // pi records aborted results for prepared calls instead of dropping them;
+    // neither sibling may carry a successful read payload.
+    expect(toolResults).toHaveLength(2);
+    for (const result of toolResults) {
+      expect(result).toMatchObject({ isError: true });
+      expect(JSON.stringify(result)).toContain("Operation aborted");
+      expect(JSON.stringify(result)).not.toContain("first file body");
+    }
+    expect(service.getMessages().filter((message) => message.role === "assistant")).toHaveLength(1);
+  });
+
+  it("blocks mutating tools in plan mode and feeds the read-only denial back to the model", async () => {
+    const streamFn = scriptedStreamFn([
+      { content: [{ type: "toolCall", id: "call-1", name: "write", arguments: { path: "note.md", content: "hi" } }], stopReason: "toolUse" },
+      { content: [{ type: "text", text: "Read-only — here's what I would write." }], stopReason: "stop" },
+    ]);
+    // Approval allows mutating and the user would confirm — plan mode must still block.
+    const { service, settings } = makeService(streamFn, async () => ({ approved: true, remember: false }));
+    settings.mode = "plan";
+    settings.approval = { mutating: "allow", perTool: {}, workingDirs: [] };
+    await service.sendPrompt("Create note.md");
+
+    const toolResult = service.getMessages().find((message) => message.role === "toolResult") as
+      | { role: "toolResult"; isError: boolean; content: Array<{ type: string; text?: string }> }
+      | undefined;
+    expect(toolResult?.isError).toBe(true);
+    const resultText = (toolResult?.content ?? []).map((block) => block.text ?? "").join("");
+    expect(resultText).toMatch(/read-only/i);
+  });
+
+  it("loop guard soft-stops after 4 identical scripted tool batches and appends a plain-text message", async () => {
+    const toolTurn: { content: AssistantMessage["content"]; stopReason: "stop" | "toolUse" } = {
+      content: [{ type: "toolCall", id: "call-loop", name: "write", arguments: { path: "loop.md", content: "x" } }],
+      stopReason: "toolUse",
+    };
+    // The 5th scripted turn ("final answer") must never be requested: the guard
+    // stops the run after the 4th identical batch.
+    const streamFn = scriptedStreamFn([
+      toolTurn,
+      toolTurn,
+      toolTurn,
+      toolTurn,
+      { content: [{ type: "text", text: "final answer" }], stopReason: "stop" },
+    ]);
+    const { service, settings, adapter } = makeService(streamFn, async () => ({ approved: true, remember: false }));
+    // Per-tool deny blocks every scripted write without a modal; the denial
+    // text is identical each time, so the batches hash identically.
+    settings.approval = { mutating: "allow", perTool: { write: "deny" }, workingDirs: [] };
+    await service.sendPrompt("Loop please");
+
+    const assistants = service.getMessages().filter((message) => message.role === "assistant");
+    // 4 scripted tool turns + loop-guard note appended to live context so retry sees why it stopped.
+    expect(assistants).toHaveLength(5);
+    expect(JSON.stringify(assistants[4].content)).toMatch(/Loop guard.*write/);
+    // The scripted 5th turn was never consumed — the run ended at the guard.
+    expect(
+      service.getMessages().some((message) => "content" in message && JSON.stringify(message.content).includes("final answer")),
+    ).toBe(false);
+    // The guard message is persisted with the session and survives reload.
+    const entries = parseSessionEntries(await adapter.read(service.getSessionInfo()?.path ?? ""));
+    const assistantMessages = entries
+      .filter((entry) => entry.type === "message")
+      .map((entry) => entry.message)
+      .filter((message) => message.role === "assistant")
+      .map((message) => JSON.stringify(message.content));
+    expect(assistantMessages).toHaveLength(5); // 4 scripted tool turns + loop-guard message
+    expect(assistantMessages[4]).toMatch(/Loop guard/);
+  });
+
+  it("yolo mode auto-approves mutating tools, but an explicit per-tool deny still wins", async () => {
+    const streamFn = scriptedStreamFn([
+      { content: [{ type: "toolCall", id: "call-1", name: "write", arguments: { path: "note.md", content: "hi" } }], stopReason: "toolUse" },
+      { content: [{ type: "text", text: "Understood, write is off-limits." }], stopReason: "stop" },
+    ]);
+    // YOLO forces mutating→allow, but the per-tool deny on `write` must override it,
+    // and never prompt the user even though confirmToolCall would say yes.
+    const { service, settings } = makeService(streamFn, async () => ({ approved: true, remember: false }));
+    settings.mode = "yolo";
+    settings.approval = { mutating: "allow", perTool: { write: "deny" }, workingDirs: [] };
+    await service.sendPrompt("Create note.md");
+
+    const toolResult = service.getMessages().find((message) => message.role === "toolResult") as
+      | { role: "toolResult"; isError: boolean; content: Array<{ type: string; text?: string }> }
+      | undefined;
+    expect(toolResult?.isError).toBe(true);
+    const resultText = (toolResult?.content ?? []).map((block) => block.text ?? "").join("");
+    expect(resultText).toMatch(/disabled by your approval settings|declined/i);
+    // The model received the denial and produced a follow-up turn.
+    expect(service.getMessages().filter((message) => message.role === "assistant")).toHaveLength(2);
+  });
+
+  it("safe-mode working-dir boundary routes out-of-scope mutations through ask", async () => {
+    const streamFn = scriptedStreamFn([
+      { content: [{ type: "toolCall", id: "call-1", name: "write", arguments: { path: "Other/x.md", content: "hi" } }], stopReason: "toolUse" },
+      { content: [{ type: "text", text: "Ok, leaving it." }], stopReason: "stop" },
+    ]);
+    let confirmCalls = 0;
+    const { service, settings } = makeService(streamFn, async () => {
+      confirmCalls += 1;
+      return { approved: false, remember: false };
+    });
+    settings.mode = "safe";
+    // Even with mutating set to allow, a target outside the working set must prompt.
+    settings.approval = { mutating: "allow", perTool: {}, workingDirs: ["Notes"] };
+    await service.sendPrompt("write outside");
+    expect(confirmCalls).toBe(1);
+  });
+
+  it("safe-mode working-dir boundary auto-runs mutations inside the granted dir", async () => {
+    const streamFn = scriptedStreamFn([
+      { content: [{ type: "toolCall", id: "call-1", name: "write", arguments: { path: "Notes/x.md", content: "hi" } }], stopReason: "toolUse" },
+      { content: [{ type: "text", text: "Wrote it." }], stopReason: "stop" },
+    ]);
+    let confirmCalls = 0;
+    const { service, settings } = makeService(streamFn, async () => {
+      confirmCalls += 1;
+      return { approved: true, remember: false };
+    });
+    settings.mode = "safe";
+    // Default mutating "ask" is overridden to auto-run because the target is in-scope.
+    settings.approval = { mutating: "ask", perTool: {}, workingDirs: ["Notes"] };
+    await service.sendPrompt("write inside");
+    expect(confirmCalls).toBe(0);
+  });
+
+  it("safe-mode working-dir boundary asks before reading outside the granted dir", async () => {
+    const streamFn = scriptedStreamFn([
+      { content: [{ type: "toolCall", id: "call-1", name: "read", arguments: { path: "Other/x.md" } }], stopReason: "toolUse" },
+      { content: [{ type: "text", text: "Ok." }], stopReason: "stop" },
+    ]);
+    let confirmCalls = 0;
+    const { service, settings } = makeService(streamFn, async () => {
+      confirmCalls += 1;
+      return { approved: false, remember: false };
+    });
+    settings.mode = "safe";
+    // A read is normally free, but with a working set configured an out-of-scope read asks (S2).
+    settings.approval = { mutating: "ask", perTool: {}, workingDirs: ["Notes"] };
+    await service.sendPrompt("read outside");
+    expect(confirmCalls).toBe(1);
+  });
+
+  it("dispatches a subagent, folds child usage into the session, and exposes profiles", async () => {
+    const streamFn = scriptedStreamFn([
+      // Parent turn 1: ask to dispatch the explorer subagent (S8 single role).
+      { content: [{ type: "toolCall", id: "call-1", name: "subagent", arguments: { agent: "explorer", task: "summarize the inbox" } }], stopReason: "toolUse" },
+      // Child turn: the explorer's reply (same injected stream serves the child).
+      { content: [{ type: "text", text: "Inbox has 3 open threads." }], stopReason: "stop" },
+      // Parent turn 2: final answer after the subagent returns.
+      { content: [{ type: "text", text: "All done." }], stopReason: "stop" },
+    ]);
+    const { service } = makeService(streamFn);
+    await service.sendPrompt("Use a subagent to check my inbox");
+
+    expect(service.getProfiles().map((profile) => profile.name)).toContain("explorer");
+    const toolResult = service.getMessages().find((message) => message.role === "toolResult") as
+      | { role: "toolResult"; isError: boolean; content: Array<{ type: string; text?: string }> }
+      | undefined;
+    expect(toolResult?.isError).toBe(false);
+    const resultText = (toolResult?.content ?? []).map((block) => block.text ?? "").join("");
+    expect(resultText).toContain("Inbox has 3 open threads.");
+    // Parent's two assistant turns (2 + 2) plus the child's folded-in usage (2).
+    expect(service.getSessionUsage().totalTokens).toBe(6);
+  });
+
+  it("gates child subagent tool calls against the configured working set", async () => {
+    const streamFn = scriptedStreamFn([
+      { content: [{ type: "toolCall", id: "call-1", name: "subagent", arguments: { agent: "explorer", task: "update a note" } }], stopReason: "toolUse" },
+      { content: [{ type: "toolCall", id: "child-call-1", name: "read", arguments: { path: "Other/x.md" } }], stopReason: "toolUse" },
+      { content: [{ type: "text", text: "child saw the denial" }], stopReason: "stop" },
+      { content: [{ type: "text", text: "parent saw child result" }], stopReason: "stop" },
+    ]);
+    let confirmCalls = 0;
+    const { service, settings } = makeService(streamFn, async () => {
+      confirmCalls += 1;
+      return { approved: false, remember: false };
+    });
+    settings.mode = "safe";
+    settings.approval = { mutating: "allow", perTool: {}, workingDirs: ["Notes"] };
+    await service.sendPrompt("edit with a subagent");
+    expect(confirmCalls).toBe(1);
+    const resultText = service
+      .getMessages()
+      .filter((message) => message.role === "toolResult")
+      .flatMap((message) => message.content)
+      .map((block) => (block.type === "text" ? block.text : ""))
+      .join("");
+    expect(resultText).toContain("child saw the denial");
+  });
+
+  it("exposes the deep-research skill only when web access is enabled", async () => {
+    const off = makeService(cannedStreamFn("hi"));
+    await off.service.initialize();
+    expect(off.service.getSkills().map((skill) => skill.name)).not.toContain("deep-research");
+
+    const on = makeService(cannedStreamFn("hi"));
+    on.settings.web = { ...on.settings.web, enabled: true };
+    await on.service.initialize();
+    expect(on.service.getSkills().map((skill) => skill.name)).toContain("deep-research");
+  });
+
+  it("lists available subagents (and hints a skill) for an unknown /agent name", async () => {
+    const { service, settings } = makeService(cannedStreamFn("unused"));
+    settings.web = { ...settings.web, enabled: true }; // load the deep-research skill
+    await service.initialize();
+
+    await service.invokeAgent("deep", "do some research");
+    const error = service.getError() ?? "";
+    expect(error).toContain('No subagent named "deep"');
+    expect(error).toContain("explorer"); // available built-in roles are listed (S8)
+    expect(error).toMatch(/deep-research/); // "deep" is hinted as the deep-research skill
+  });
+
+  it("auto-compacts old turns once the context window fills, preserving usage", async () => {
+    // The synthesized model has a 128k window. Large prompt bodies push the real
+    // transcript estimate over the 80% threshold, while provider usage remains
+    // separate so the test still proves dropped usage is preserved.
+    const firstPrompt = `first ${"word ".repeat(50_000)}`;
+    const secondPrompt = `second ${"word ".repeat(50_000)}`;
+    const bigUsageStream: StreamFn = ((model: Model<"openai-completions">) => {
+      const stream = createAssistantMessageEventStream();
+      const message = {
+        role: "assistant" as const,
+        content: [{ type: "text" as const, text: "ok" }],
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+        usage: {
+          input: 110_000,
+          output: 100,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 110_100,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: "stop" as const,
+        timestamp: Date.now(),
+      };
+      queueMicrotask(() => {
+        stream.push({ type: "start", partial: { ...message, content: [] } });
+        stream.push({ type: "done", reason: "stop", message });
+        stream.end(message);
+      });
+      return stream;
+    }) as unknown as StreamFn;
+
+    const settings: AgenticChatSettings = {
+      ...DEFAULT_SETTINGS,
+      openrouterApiKey: "test-key",
+      // An id absent from pi's catalog → synthesized model with the default 128k window.
+      openrouterModel: "test/compaction-model",
+    };
+    const adapter = new MemoryAdapter();
+    const sessionManager = new ObsidianSessionManager(adapter.asDataAdapter(), "sessions", "vault:test");
+    let summarizeCalls = 0;
+    const service = new AgentService({
+      app: { vault: { on: () => ({}), offref: () => {} }, workspace: {} } as unknown as App,
+      getSettings: () => settings,
+      sessionManager,
+      confirmToolCall: async () => ({ approved: true, remember: false }),
+      streamFn: bigUsageStream,
+      summarize: async () => {
+        summarizeCalls += 1;
+        return "Summary of earlier turns.";
+      },
+    });
+
+    await service.sendPrompt(firstPrompt);
+    await service.sendPrompt(secondPrompt);
+    expect(service.getCompactionCount()).toBe(0); // only one user turn behind us so far
+
+    await service.sendPrompt("third"); // maybeCompact runs before this prompt
+    expect(summarizeCalls).toBe(1);
+    expect(service.getCompactionCount()).toBe(1);
+
+    const messages = service.getMessages();
+    expect(isSummaryMessage(messages[0])).toBe(true);
+    // The first turn was folded into the summary, not left verbatim.
+    expect(messages.some((m) => JSON.stringify(m).includes('"first"'))).toBe(false);
+    // 3 turns × 110_100 totalTokens, with the dropped turn folded into the session total.
+    expect(service.getSessionUsage().totalTokens).toBe(330_300);
+
+    // The compacted usage is carried on the summary message, so reloading the
+    // session from disk into a fresh service preserves the total and the count.
+    const path = service.getSessionInfo()?.path as string;
+    const reloaded = new AgentService({
+      app: { vault: { on: () => ({}), offref: () => {} }, workspace: {} } as unknown as App,
+      getSettings: () => settings,
+      sessionManager: new ObsidianSessionManager(adapter.asDataAdapter(), "sessions", "vault:test"),
+      confirmToolCall: async () => ({ approved: true, remember: false }),
+      streamFn: bigUsageStream,
+      summarize: async () => "unused",
+    });
+    await reloaded.loadSession(path);
+    expect(reloaded.getCompactionCount()).toBe(1);
+    expect(reloaded.getSessionUsage().totalTokens).toBe(330_300);
+  });
+
+  it("reloads the persisted transcript when compaction cannot replace the live agent", async () => {
+    const firstPrompt = `first ${"word ".repeat(50_000)}`;
+    const secondPrompt = `second ${"word ".repeat(50_000)}`;
+    let streamCalls = 0;
+    const bigUsageStream: StreamFn = ((model: Model<"openai-completions">) => {
+      streamCalls += 1;
+      const stream = createAssistantMessageEventStream();
+      const message = {
+        role: "assistant" as const,
+        content: [{ type: "text" as const, text: "ok" }],
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+        usage: {
+          input: 110_000,
+          output: 100,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 110_100,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: "stop" as const,
+        timestamp: Date.now(),
+      };
+      queueMicrotask(() => {
+        stream.push({ type: "start", partial: { ...message, content: [] } });
+        stream.push({ type: "done", reason: "stop", message });
+        stream.end(message);
+      });
+      return stream;
+    }) as unknown as StreamFn;
+
+    const settings: AgenticChatSettings = {
+      ...DEFAULT_SETTINGS,
+      openrouterApiKey: "test-key",
+      openrouterModel: "test/compaction-model",
+    };
+    const adapter = new MemoryAdapter();
+    const sessionManager = new ObsidianSessionManager(adapter.asDataAdapter(), "sessions", "vault:test");
+    let summarizeCalls = 0;
+    const service = new AgentService({
+      app: minimalApp(),
+      getSettings: () => settings,
+      sessionManager,
+      confirmToolCall: async () => ({ approved: true, remember: false }),
+      streamFn: bigUsageStream,
+      summarize: async () => {
+        summarizeCalls += 1;
+        return "Summary written before the replace failed.";
+      },
+    });
+
+    await service.sendPrompt(firstPrompt);
+    await service.sendPrompt(secondPrompt);
+    expect(streamCalls).toBe(2);
+
+    // Simulate the agent replacement failing after the JSONL rewrite succeeds.
+    const parentAgent = (service as unknown as {
+      parentAgent: { replace: (messages: AgentMessage[]) => unknown };
+    }).parentAgent;
+    const replace = parentAgent.replace.bind(parentAgent);
+    let failedOnce = false;
+    parentAgent.replace = (messages) => {
+      if (!failedOnce) {
+        failedOnce = true;
+        throw new Error("simulated replace failure");
+      }
+      return replace(messages);
+    };
+
+    await service.sendPrompt("third");
+    expect(failedOnce).toBe(true);
+    expect(streamCalls).toBe(3);
+    expect(summarizeCalls).toBe(1);
+    expect(service.getMessages()[0] && isSummaryMessage(service.getMessages()[0])).toBe(true);
+
+    // The next turn must continue from the persisted, compacted session rather
+    // than the stale in-memory transcript or a second summary.
+    await service.sendPrompt("fourth");
+    expect(streamCalls).toBe(4);
+    expect(service.getCompactionCount()).toBe(1);
+    expect(service.getMessages().some((message) => JSON.stringify(message).includes("first"))).toBe(false);
+    const path = service.getSessionInfo()?.path as string;
+    const persisted = parseSessionEntries(await adapter.read(path));
+    expect(persisted.filter((entry) => entry.type === "message" && isSummaryMessage(entry.message))).toHaveLength(1);
+  });
+
+  it("records skipped manual compaction attempts in the session audit log", async () => {
+    const { service, adapter } = makeService(cannedStreamFn("unused"));
+
+    const result = await service.compactNow("preserve decisions");
+
+    expect(result.compacted).toBe(false);
+    const events = await persistedActionAuditEvents(adapter, service);
+    expect(events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: "compaction",
+          action: "start",
+          trigger: "manual",
+          hasInstructions: true,
+        }),
+        expect.objectContaining({
+          category: "compaction",
+          action: "end",
+          trigger: "manual",
+          status: "skipped",
+          reason: "no_plan",
+          message: expect.stringContaining("Need at least two user turns"),
+        }),
+      ]),
+    );
+  });
+
+  it("records successful manual compaction with one start and one end event", async () => {
+    const settings: AgenticChatSettings = { ...DEFAULT_SETTINGS, openrouterApiKey: "test-key" };
+    const adapter = new MemoryAdapter();
+    const sessionManager = new ObsidianSessionManager(adapter.asDataAdapter(), "sessions", "vault:test");
+    const service = new AgentService({
+      app: minimalApp(),
+      getSettings: () => settings,
+      sessionManager,
+      confirmToolCall: async () => ({ approved: true, remember: false }),
+      streamFn: cannedStreamFn("ok"),
+      summarize: async () => "Manual summary.",
+    });
+
+    await service.sendPrompt("first request");
+    await service.sendPrompt("second request");
+    const result = await service.compactNow();
+
+    expect(result.compacted).toBe(true);
+    const events = await persistedActionAuditEvents(adapter, service);
+    const compactionEvents = events.filter((event) => event.category === "compaction");
+    expect(compactionEvents.filter((event) => event.action === "start")).toHaveLength(1);
+    expect(compactionEvents.filter((event) => event.action === "end")).toHaveLength(1);
+    expect(compactionEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          category: "compaction",
+          action: "end",
+          trigger: "manual",
+          status: "compacted",
+        }),
+      ]),
+    );
+  });
+
+  it("reports busy when a manual compaction races another pass", async () => {
+    let started!: () => void;
+    let release!: () => void;
+    let secondEntered!: () => void;
+    const startedPromise = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const secondEnteredPromise = new Promise<void>((resolve) => {
+      secondEntered = resolve;
+    });
+    const settings: AgenticChatSettings = { ...DEFAULT_SETTINGS, openrouterApiKey: "test-key" };
+    const adapter = new MemoryAdapter();
+    const sessionManager = new ObsidianSessionManager(adapter.asDataAdapter(), "sessions", "vault:test");
+    const service = new AgentService({
+      app: minimalApp(),
+      getSettings: () => settings,
+      sessionManager,
+      confirmToolCall: async () => ({ approved: true, remember: false }),
+      streamFn: cannedStreamFn("ok"),
+      summarize: async () => {
+        started();
+        await gate;
+        return "Manual summary.";
+      },
+    });
+
+    await service.sendPrompt("first request");
+    await service.sendPrompt("second request");
+
+    // Hold the runtime pass directly so compactNow reaches the busy guard with
+    // a deterministic in-flight run. Track the second runtime entry: the manual
+    // path awaits its audit write first, so releasing before that entry lets the
+    // first pass finish and hides the race.
+    const compaction = (service as unknown as { compaction: AgentCompactionRuntime }).compaction;
+    const originalCompact = compaction.compactWithResult.bind(compaction);
+    let runtimeCalls = 0;
+    compaction.compactWithResult = async (messages, contextWindow, options) => {
+      runtimeCalls += 1;
+      if (runtimeCalls === 2) secondEntered();
+      return originalCompact(messages, contextWindow, options);
+    };
+
+    const first = compaction.compactWithResult(service.getMessages(), 1_000, { force: true });
+    await startedPromise;
+    const secondPromise = service.compactNow("keep the budget");
+    await secondEnteredPromise;
+    // Release after the manual call is inside the runtime. On the parent it
+    // joins the first pass; on the fix it has already returned busy.
+    release();
+    const second = await secondPromise;
+
+    expect(second).toMatchObject({
+      compacted: false,
+      message: expect.stringContaining("already running"),
+    });
+    await expect(first).resolves.toMatchObject({ status: "compacted" });
+  });
+
+  it("blocks a prompt when the session changes during turn preparation", async () => {
+    let streamCalls = 0;
+    const bigUsageStream: StreamFn = ((model: Model<"openai-completions">) => {
+      streamCalls += 1;
+      const stream = createAssistantMessageEventStream();
+      const message = {
+        role: "assistant" as const,
+        content: [{ type: "text" as const, text: "ok" }],
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+        usage: {
+          input: 110_000,
+          output: 100,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 110_100,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: "stop" as const,
+        timestamp: Date.now(),
+      };
+      queueMicrotask(() => {
+        stream.push({ type: "start", partial: { ...message, content: [] } });
+        stream.push({ type: "done", reason: "stop", message });
+        stream.end(message);
+      });
+      return stream;
+    }) as unknown as StreamFn;
+
+    let started!: () => void;
+    let release!: () => void;
+    const startedPromise = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const settings: AgenticChatSettings = {
+      ...DEFAULT_SETTINGS,
+      openrouterApiKey: "test-key",
+      openrouterModel: "test/compaction-model",
+    };
+    const adapter = new MemoryAdapter();
+    const sessionManager = new ObsidianSessionManager(adapter.asDataAdapter(), "sessions", "vault:test");
+    const service = new AgentService({
+      app: minimalApp(),
+      getSettings: () => settings,
+      sessionManager,
+      confirmToolCall: async () => ({ approved: true, remember: false }),
+      streamFn: bigUsageStream,
+      summarize: async () => {
+        started();
+        await gate;
+        return "Late summary.";
+      },
+    });
+
+    await service.sendPrompt(`first ${"word ".repeat(50_000)}`);
+    await service.sendPrompt(`second ${"word ".repeat(50_000)}`);
+    expect(streamCalls).toBe(2);
+
+    const run = service.sendPrompt("third that must not run");
+    await startedPromise;
+    await service.newSession();
+    release();
+    await run;
+
+    expect(streamCalls).toBe(2);
+    expect(service.getError()).toMatch(/session changed while preparing this turn/i);
+  });
+
+  it("keeps the recovery error and skips the prompt when the live replace fails", async () => {
+    let streamCalls = 0;
+    const bigUsageStream: StreamFn = ((model: Model<"openai-completions">) => {
+      streamCalls += 1;
+      const stream = createAssistantMessageEventStream();
+      const message = {
+        role: "assistant" as const,
+        content: [{ type: "text" as const, text: "ok" }],
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+        usage: {
+          input: 110_000,
+          output: 100,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 110_100,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: "stop" as const,
+        timestamp: Date.now(),
+      };
+      queueMicrotask(() => {
+        stream.push({ type: "start", partial: { ...message, content: [] } });
+        stream.push({ type: "done", reason: "stop", message });
+        stream.end(message);
+      });
+      return stream;
+    }) as unknown as StreamFn;
+
+    const settings: AgenticChatSettings = {
+      ...DEFAULT_SETTINGS,
+      openrouterApiKey: "test-key",
+      openrouterModel: "test/compaction-model",
+    };
+    const adapter = new MemoryAdapter();
+    const sessionManager = new ObsidianSessionManager(adapter.asDataAdapter(), "sessions", "vault:test");
+    const service = new AgentService({
+      app: minimalApp(),
+      getSettings: () => settings,
+      sessionManager,
+      confirmToolCall: async () => ({ approved: true, remember: false }),
+      streamFn: bigUsageStream,
+      summarize: async () => "Summary that cannot be installed.",
+    });
+
+    await service.sendPrompt(`first ${"word ".repeat(50_000)}`);
+    await service.sendPrompt(`second ${"word ".repeat(50_000)}`);
+    expect(streamCalls).toBe(2);
+
+    const parentAgent = (service as unknown as {
+      parentAgent: { replace: (messages: AgentMessage[]) => unknown };
+    }).parentAgent;
+    parentAgent.replace = () => {
+      throw new Error("simulated replace failure");
+    };
+    const originalLoad = sessionManager.loadSession.bind(sessionManager);
+    sessionManager.loadSession = async () => {
+      throw new Error("simulated recovery load failure");
+    };
+
+    await service.sendPrompt("third");
+
+    expect(streamCalls).toBe(2);
+    expect(service.getError()).toMatch(/Compaction rewrote the saved session/);
+    sessionManager.loadSession = originalLoad;
+  });
+
+  it("returns a normal result when the session changes during manual compaction", async () => {
+    let started!: () => void;
+    let release!: () => void;
+    const startedPromise = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const settings: AgenticChatSettings = { ...DEFAULT_SETTINGS, openrouterApiKey: "test-key" };
+    const adapter = new MemoryAdapter();
+    const sessionManager = new ObsidianSessionManager(adapter.asDataAdapter(), "sessions", "vault:test");
+    const service = new AgentService({
+      app: minimalApp(),
+      getSettings: () => settings,
+      sessionManager,
+      confirmToolCall: async () => ({ approved: true, remember: false }),
+      streamFn: cannedStreamFn("ok"),
+      summarize: async () => {
+        started();
+        await gate;
+        return "Late manual summary.";
+      },
+    });
+
+    await service.sendPrompt("first request");
+    await service.sendPrompt("second request");
+    const firstPath = service.getSessionInfo()?.path as string;
+    await service.newSession();
+    const secondPath = service.getSessionInfo()?.path as string;
+    await service.loadSession(firstPath);
+    const secondBefore = await adapter.read(secondPath);
+
+    const compaction = service.compactNow();
+    await startedPromise;
+    await service.loadSession(secondPath);
+    release();
+
+    await expect(compaction).resolves.toMatchObject({
+      compacted: false,
+      message: expect.stringMatching(/session changed/i),
+    });
+    expect(await adapter.read(secondPath)).toBe(secondBefore);
+  });
+
+  it("does not write A into B when the session changes during the manual compaction audit", async () => {
+    let started!: () => void;
+    let release!: () => void;
+    const startedPromise = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const settings: AgenticChatSettings = { ...DEFAULT_SETTINGS, openrouterApiKey: "test-key" };
+    const adapter = new MemoryAdapter();
+    const sessionManager = new ObsidianSessionManager(adapter.asDataAdapter(), "sessions", "vault:test");
+    const service = new AgentService({
+      app: minimalApp(),
+      getSettings: () => settings,
+      sessionManager,
+      confirmToolCall: async () => ({ approved: true, remember: false }),
+      streamFn: cannedStreamFn("ok"),
+      summarize: async () => "Late manual summary.",
+    });
+
+    await service.sendPrompt("first request");
+    await service.sendPrompt("second request");
+    const firstPath = service.getSessionInfo()?.path as string;
+    await service.newSession();
+    const secondPath = service.getSessionInfo()?.path as string;
+    await service.loadSession(firstPath);
+    const secondBefore = parseSessionEntries(await adapter.read(secondPath)).filter(
+      (entry) => entry.type === "message",
+    );
+
+    const originalAppend = sessionManager.appendActionAuditEvent.bind(sessionManager);
+    let gated = false;
+    sessionManager.appendActionAuditEvent = async (event) => {
+      if (!gated && event.category === "compaction" && event.action === "start") {
+        gated = true;
+        started();
+        await gate;
+      }
+      return originalAppend(event);
+    };
+
+    const compaction = service.compactNow();
+    await startedPromise;
+    await service.loadSession(secondPath);
+    release();
+
+    await expect(compaction).resolves.toMatchObject({
+      compacted: false,
+      message: expect.stringMatching(/session changed/i),
+    });
+    expect(await adapter.read(secondPath)).not.toContain("Late manual summary");
+    expect(
+      parseSessionEntries(await adapter.read(secondPath)).filter((entry) => entry.type === "message"),
+    ).toEqual(secondBefore);
+    sessionManager.appendActionAuditEvent = originalAppend;
+  });
+
+  it("does not let manual compaction overwrite a transcript truncation", async () => {
+    let started!: () => void;
+    let release!: () => void;
+    const startedPromise = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const settings: AgenticChatSettings = { ...DEFAULT_SETTINGS, openrouterApiKey: "test-key" };
+    const adapter = new MemoryAdapter();
+    const sessionManager = new ObsidianSessionManager(adapter.asDataAdapter(), "sessions", "vault:test");
+    const service = new AgentService({
+      app: minimalApp(),
+      getSettings: () => settings,
+      sessionManager,
+      confirmToolCall: async () => ({ approved: true, remember: false }),
+      streamFn: cannedStreamFn("ok"),
+      summarize: async () => {
+        started();
+        await gate;
+        return "Summary that must not replace the truncation.";
+      },
+    });
+
+    await service.sendPrompt("first request");
+    await service.sendPrompt("second request");
+    const sessionPath = service.getSessionInfo()?.path as string;
+
+    const compaction = service.compactNow();
+    await startedPromise;
+    await service.truncateMessages(1);
+    release();
+
+    await expect(compaction).resolves.toMatchObject({
+      compacted: false,
+      message: expect.stringMatching(/session changed/i),
+    });
+    const entries = parseSessionEntries(await adapter.read(sessionPath));
+    const persisted = entries.filter((entry) => entry.type === "message").map((entry) => entry.message);
+    expect(persisted).toHaveLength(1);
+    expect(isSummaryMessage(persisted[0])).toBe(false);
+  });
+
+  it("refuses steering prepared for a different session token", async () => {
+    const controlled = controlledStreamFn(["answer"]);
+    const { service } = makeService(controlled.streamFn);
+
+    await service.initialize();
+    const sessionToken = service.getSessionToken();
+    await service.newSession();
+    await service.steerPrompt("stale steering", undefined, sessionToken);
+
+    expect(service.getError()).toMatch(/session changed while preparing this turn/i);
+    expect(controlled.runs).toHaveLength(0);
+    expect(userTexts(service.getMessages())).toEqual([]);
+  });
+
+  it("refuses a redirect prepared for a different session token", async () => {
+    const controlled = controlledStreamFn(["answer"]);
+    const { service } = makeService(controlled.streamFn);
+
+    await service.initialize();
+    const sessionToken = service.getSessionToken();
+    await service.newSession();
+    await service.redirectPrompt("stale redirect", undefined, sessionToken);
+
+    expect(service.getError()).toMatch(/session changed while preparing this turn/i);
+    expect(controlled.runs).toHaveLength(0);
+    expect(userTexts(service.getMessages())).toEqual([]);
+  });
+
+  it("queues steering into an active run and persists transcript order", async () => {
+    const controlled = controlledStreamFn(["first answer", "steered answer"]);
+    const { service, adapter } = makeService(controlled.streamFn);
+
+    const run = service.sendPrompt("initial request");
+    await waitFor(() => controlled.runs.length === 1 && service.isStreaming(), "first active stream");
+
+    await service.steerPrompt("keep citations strict");
+    controlled.runs[0].finish();
+    await waitFor(() => controlled.runs.length === 2, "steered continuation");
+
+    expect(userTexts(controlled.runs[1].context.messages)).toEqual(["initial request", "keep citations strict"]);
+    controlled.runs[1].finish();
+    await run;
+
+    expect(service.getMessages().map((message) => message.role)).toEqual(["user", "assistant", "user", "assistant"]);
+    expect(userTexts(service.getMessages())).toEqual(["initial request", "keep citations strict"]);
+    await expect(persistedMessageRoles(adapter, service)).resolves.toEqual(["user", "assistant", "user", "assistant"]);
+  });
+
+  it("queues follow-up prompts after the current run would otherwise stop", async () => {
+    const controlled = controlledStreamFn(["first answer", "follow-up answer"]);
+    const { service } = makeService(controlled.streamFn);
+
+    const run = service.sendPrompt("initial request");
+    await waitFor(() => controlled.runs.length === 1 && service.isStreaming(), "first active stream");
+
+    await service.followUpPrompt("now summarize the decision");
+    controlled.runs[0].finish();
+    await waitFor(() => controlled.runs.length === 2, "follow-up continuation");
+
+    expect(userTexts(controlled.runs[1].context.messages)).toEqual(["initial request", "now summarize the decision"]);
+    controlled.runs[1].finish();
+    await run;
+    expect(service.getMessages().map((message) => message.role)).toEqual(["user", "assistant", "user", "assistant"]);
+  });
+
+  it("redirects by aborting the active run and continuing from the queued steering message", async () => {
+    const controlled = controlledStreamFn(["will abort", "redirected answer"]);
+    const { service, adapter } = makeService(controlled.streamFn);
+
+    const run = service.sendPrompt("initial request");
+    await waitFor(() => controlled.runs.length === 1 && service.isStreaming(), "first active stream");
+
+    const redirect = service.redirectPrompt("ignore that and answer the narrower question");
+    await waitFor(() => controlled.runs.length === 2, "redirect continuation");
+
+    controlled.runs[1].finish();
+    await Promise.all([run, redirect]);
+
+    expect(service.getMessages().map((message) => message.role)).toEqual(["user", "assistant", "user", "assistant"]);
+    expect(service.getMessages()[1]).toMatchObject({ role: "assistant", stopReason: "aborted" });
+    expect(userTexts(service.getMessages())).toEqual([
+      "initial request",
+      "ignore that and answer the narrower question",
+    ]);
+    await expect(persistedMessageRoles(adapter, service)).resolves.toEqual(["user", "assistant", "user", "assistant"]);
+  });
+
+  it("delivers two immediate redirects in order without dropping the second", async () => {
+    const controlled = controlledStreamFn(["initial answer", "first redirect answer", "second redirect answer"]);
+    const { service } = makeService(controlled.streamFn);
+
+    const run = service.sendPrompt("initial request");
+    await waitFor(() => controlled.runs.length === 1 && service.isStreaming(), "initial stream");
+
+    const firstRedirect = service.redirectPrompt("first redirected question");
+    const secondRedirect = service.redirectPrompt("second redirected question");
+
+    await waitFor(() => controlled.runs.length === 2, "first redirect continuation");
+    controlled.runs[1].finish();
+    await waitFor(() => controlled.runs.length === 3, "second redirect continuation");
+    controlled.runs[2].finish();
+    await Promise.all([run, firstRedirect, secondRedirect]);
+
+    expect(userTexts(service.getMessages())).toEqual([
+      "initial request",
+      "first redirected question",
+      "second redirected question",
+    ]);
+    expect(
+      userTexts(controlled.runs[1].context.messages).filter((text) => text === "first redirected question"),
+    ).toHaveLength(1);
+    expect(
+      userTexts(controlled.runs[2].context.messages).filter((text) => text === "second redirected question"),
+    ).toHaveLength(1);
+    expect(service.getError()).toBeUndefined();
+  });
+
+  it("drops a queued redirect when the session changes during its idle wait", async () => {
+    const controlled = controlledStreamFn(["initial answer"]);
+    // Any unexpected second run (the base bug) completes immediately so the
+    // assertion fails fast instead of timing out on a hanging stream.
+    const streamFn: StreamFn = ((model, context, options) => {
+      const stream = controlled.streamFn(model, context, options);
+      if (controlled.runs.length > 1) controlled.runs[controlled.runs.length - 1].finish();
+      return stream;
+    }) as StreamFn;
+    const { service } = makeService(streamFn);
+
+    const run = service.sendPrompt("initial request");
+    await waitFor(() => controlled.runs.length === 1 && service.isStreaming(), "initial stream");
+    const sessionToken = service.getSessionToken();
+
+    const promptTurns = (
+      service as unknown as { promptTurns: { waitForIdle: () => Promise<void> } }
+    ).promptTurns;
+    const originalWaitForIdle = promptTurns.waitForIdle.bind(promptTurns);
+    let releaseWait!: () => void;
+    let markEntered!: () => void;
+    const enteredWait = new Promise<void>((resolve) => {
+      markEntered = resolve;
+    });
+    const waitGate = new Promise<void>((resolve) => {
+      releaseWait = resolve;
+    });
+    promptTurns.waitForIdle = async () => {
+      markEntered();
+      await waitGate;
+    };
+
+    const redirect = service.redirectPrompt("redirect from the old session", undefined, sessionToken);
+    controlled.runs[0].finish();
+    await enteredWait;
+    // Swap sessions while the redirect worker is parked before start.
+    await service.newSession();
+    releaseWait();
+
+    await Promise.all([run, redirect]);
+
+    expect(controlled.runs).toHaveLength(1);
+    expect(userTexts(service.getMessages())).toEqual([]);
+    expect(service.getError()).toMatch(/session changed while preparing this turn/i);
+    promptTurns.waitForIdle = originalWaitForIdle;
+  });
+
+  it("delivers a redirect exactly once when the next turn compacts the transcript", async () => {
+    const controlled = controlledStreamFn(["first answer", "will be redirected", "redirected answer"]);
+    const settings: AgenticChatSettings = {
+      ...DEFAULT_SETTINGS,
+      openrouterApiKey: "test-key",
+      openrouterModel: "test/compaction-model",
+    };
+    const adapter = new MemoryAdapter();
+    const sessionManager = new ObsidianSessionManager(adapter.asDataAdapter(), "sessions", "vault:test");
+    let summarizeCalls = 0;
+    const service = new AgentService({
+      app: minimalApp(),
+      getSettings: () => settings,
+      sessionManager,
+      confirmToolCall: async () => ({ approved: true, remember: false }),
+      streamFn: controlled.streamFn,
+      summarize: async () => {
+        summarizeCalls += 1;
+        return "Summary before the redirect.";
+      },
+    });
+
+    const large = (text: string) => `${text} ${"word ".repeat(50_000)}`;
+    const first = service.sendPrompt(large("first request"));
+    await waitFor(() => controlled.runs.length === 1 && service.isStreaming(), "first active stream");
+    controlled.runs[0].finish();
+    await first;
+    const second = service.sendPrompt(large("second request"));
+    await waitFor(() => controlled.runs.length === 2 && service.isStreaming(), "second active stream");
+
+    const redirect = service.redirectPrompt("narrower redirected question");
+    await waitFor(() => controlled.runs.length === 3, "redirected continuation");
+    controlled.runs[2].finish();
+    await Promise.all([second, redirect]);
+
+    expect(summarizeCalls).toBe(1);
+    expect(isSummaryMessage(service.getMessages()[0])).toBe(true);
+    const redirectTexts = userTexts(service.getMessages()).filter((text) => text === "narrower redirected question");
+    expect(redirectTexts).toHaveLength(1);
+    expect(
+      userTexts(controlled.runs[2].context.messages).filter((text) => text === "narrower redirected question"),
+    ).toHaveLength(1);
+  });
+
+  it("detaches a streaming agent before creating the next session file", async () => {
+    const controlled = controlledStreamFn(["old answer"]);
+    const { service, adapter, sessionManager } = makeService(controlled.streamFn);
+
+    const run = service.sendPrompt("old request");
+    await waitFor(() => controlled.runs.length === 1 && service.isStreaming(), "old active stream");
+
+    const originalCreate = sessionManager.createSession.bind(sessionManager);
+    let streamingAtCreate: boolean | undefined;
+    sessionManager.createSession = async (defaults) => {
+      streamingAtCreate = service.isStreaming();
+      return originalCreate(defaults);
+    };
+
+    const swap = service.newSession();
+    await waitFor(() => streamingAtCreate !== undefined, "new session create");
+    expect(streamingAtCreate).toBe(false);
+
+    controlled.runs[0].finish();
+    await Promise.all([run, swap]);
+
+    const newPath = service.getSessionInfo()?.path as string;
+    const persisted = await adapter.read(newPath);
+    expect(persisted).not.toContain("old request");
+    expect(persisted).not.toContain("old answer");
+  });
+
+  it("waits for an in-flight session swap before sending", async () => {
+    const controlled = controlledStreamFn(["first answer", "during swap answer"]);
+    const { service, adapter, sessionManager } = makeService(controlled.streamFn);
+
+    const first = service.sendPrompt("first request");
+    await waitFor(() => controlled.runs.length === 1 && service.isStreaming(), "first active stream");
+    controlled.runs[0].finish();
+    await first;
+    const firstPath = service.getSessionInfo()?.path as string;
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await service.newSession();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await service.newSession();
+    const currentPath = service.getSessionInfo()?.path as string;
+    expect(currentPath).not.toBe(firstPath);
+    // Make the current session unambiguously the most recent so a send that
+    // bypasses the swap queue cannot accidentally land in the target session.
+    const currentEntries = parseSessionEntries(await adapter.read(currentPath));
+    const future = Date.now() + 60_000;
+    for (const entry of currentEntries) {
+      if (entry.type === "message") entry.message.timestamp = future;
+      else if ("timestamp" in entry) entry.timestamp = new Date(future).toISOString();
+    }
+    await adapter.write(currentPath, serializeSessionEntries(currentEntries));
+
+    const originalLoad = sessionManager.loadSession.bind(sessionManager);
+    let releaseLoad!: () => void;
+    let markStarted!: () => void;
+    const loadGate = new Promise<void>((resolve) => {
+      releaseLoad = resolve;
+    });
+    const loadStarted = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    sessionManager.loadSession = async (path: string) => {
+      markStarted();
+      await loadGate;
+      return originalLoad(path);
+    };
+
+    const swap = service.loadSession(firstPath);
+    await loadStarted;
+    const send = service.sendPrompt("during swap");
+    releaseLoad();
+    await swap;
+    await waitFor(() => controlled.runs.length === 2, "prompt after swap");
+    controlled.runs[1].finish();
+    await send;
+
+    expect(service.getSessionInfo()?.path).toBe(firstPath);
+    expect(userTexts(service.getMessages())).toEqual(["first request", "during swap"]);
+    await expect(adapter.read(firstPath)).resolves.toContain("during swap");
+    await expect(adapter.read(currentPath)).resolves.not.toContain("during swap");
+  });
+
+  it("clears queued steering when the user stops the active run", async () => {
+    const controlled = controlledStreamFn(["will abort", "fresh answer"]);
+    const { service } = makeService(controlled.streamFn);
+
+    const run = service.sendPrompt("initial request");
+    await waitFor(() => controlled.runs.length === 1 && service.isStreaming(), "first active stream");
+
+    await service.steerPrompt("do not run this after stop");
+    service.abort();
+    await run;
+
+    expect(service.getMessages().map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(userTexts(service.getMessages())).toEqual(["initial request"]);
+
+    const next = service.sendPrompt("fresh request");
+    await waitFor(() => controlled.runs.length === 2, "fresh run");
+    expect(userTexts(controlled.runs[1].context.messages)).toEqual(["initial request", "fresh request"]);
+    controlled.runs[1].finish();
+    await next;
+  });
+
+  it("clears queued follow-ups when the user stops the active run", async () => {
+    const controlled = controlledStreamFn(["will abort", "must not run"]);
+    const { service } = makeService(controlled.streamFn);
+
+    const run = service.sendPrompt("initial request");
+    await waitFor(() => controlled.runs.length === 1 && service.isStreaming(), "first active stream");
+
+    await service.followUpPrompt("do not run this after stop");
+    service.abort();
+    await run;
+
+    expect(service.getMessages().map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(userTexts(service.getMessages())).toEqual(["initial request"]);
+
+    const next = service.sendPrompt("fresh request");
+    await waitFor(() => controlled.runs.length === 2, "fresh run");
+    expect(userTexts(controlled.runs[1].context.messages)).toEqual(["initial request", "fresh request"]);
+    controlled.runs[1].finish();
+    await next;
+  });
+
+  it("stops only the active tab when two services share settings", async () => {
+    const first = controlledStreamFn(["first answer"]);
+    const second = controlledStreamFn(["second answer"]);
+    const a = makeService(first.streamFn);
+    const b = makeService(second.streamFn);
+
+    const runA = a.service.sendPrompt("a request");
+    const runB = b.service.sendPrompt("b request");
+    await waitFor(() => first.runs.length === 1 && second.runs.length === 1, "both active streams");
+
+    a.service.abort();
+    await runA;
+    expect(b.service.isStreaming()).toBe(true);
+
+    second.runs[0].finish();
+    await runB;
+    expect(userTexts(b.service.getMessages())).toEqual(["b request"]);
+    expect(b.service.getMessages().map((message) => message.role)).toEqual(["user", "assistant"]);
+    expect(userTexts(a.service.getMessages())).toEqual(["a request"]);
+  });
+
+  it("clears queued steering and follow-ups when the spend cap stops a run", async () => {
+    const controlled = controlledStreamFn(["first answer", "must not run"], 0.02);
+    const { service, settings } = makeService(controlled.streamFn);
+    settings.notifications.costCapUsd = 0.01;
+
+    const run = service.sendPrompt("initial request");
+    await waitFor(() => controlled.runs.length === 1 && service.isStreaming(), "first active stream");
+    await service.steerPrompt("stale steering");
+    await service.followUpPrompt("stale follow-up");
+
+    controlled.runs[0].finish();
+    await run;
+    await waitFor(() => !service.isStreaming(), "spend-capped run to settle");
+    expect(service.getError()).toMatch(/stopped this turn/i);
+
+    // Raise the cap and send again. Any queued stop-time messages would be
+    // drained into this run's context; a stop must leave both queues empty.
+    settings.notifications.costCapUsd = 1;
+    const next = service.sendPrompt("fresh request");
+    await waitFor(() => controlled.runs.length === 2, "fresh run");
+    expect(userTexts(controlled.runs[1].context.messages)).toEqual(["initial request", "fresh request"]);
+    controlled.runs[1].finish();
+    await next;
+  });
+
+  it("blocks new turns once the hard spend cap is reached", async () => {
+    const costStream: StreamFn = ((model: Model<"openai-completions">) => {
+      const stream = createAssistantMessageEventStream();
+      const message = {
+        role: "assistant" as const,
+        content: [{ type: "text" as const, text: "ok" }],
+        api: model.api,
+        provider: model.provider,
+        model: model.id,
+        usage: {
+          input: 100,
+          output: 50,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 150,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.02 },
+        },
+        stopReason: "stop" as const,
+        timestamp: Date.now(),
+      };
+      queueMicrotask(() => {
+        stream.push({ type: "start", partial: { ...message, content: [] } });
+        stream.push({ type: "done", reason: "stop", message });
+        stream.end(message);
+      });
+      return stream;
+    }) as unknown as StreamFn;
+
+    const { service, settings } = makeService(costStream);
+    settings.notifications.costCapUsd = 0.01;
+
+    await service.sendPrompt("one"); // allowed: cost is 0 at send time
+    expect(service.getSessionUsage().cost?.total).toBeCloseTo(0.02, 6);
+
+    await service.sendPrompt("two"); // blocked: 0.02 already ≥ 0.01 cap
+    expect(service.getError()).toMatch(/spend cap/i);
+    // The blocked prompt never ran, so only the first turn's two messages exist.
+    expect(service.getMessages().map((message) => message.role)).toEqual(["user", "assistant"]);
+  });
+
+  it("aborts an in-flight turn once the running turn crosses the spend cap", async () => {
+    // Turn 1 is a tool call that already costs 0.02 (> the 0.01 cap); the loop
+    // must abort after that turn instead of proceeding to a second turn.
+    const stream = scriptedCostStreamFn([
+      { content: [{ type: "toolCall", id: "c1", name: "write", arguments: { path: "n.md", content: "x" } }], stopReason: "toolUse", costTotal: 0.02 },
+      { content: [{ type: "text", text: "should not run" }], stopReason: "stop", costTotal: 0.02 },
+    ]);
+    const { service, settings } = makeService(stream, async () => ({ approved: true, remember: false }));
+    settings.notifications.costCapUsd = 0.01;
+
+    await service.sendPrompt("go"); // cost is 0 at send time, so the turn starts
+    // The "stopped this turn" wording is only produced by the in-flight
+    // enforceSpendCap path (the pre-send block uses different wording), so this
+    // proves the cap fired mid-run and aborted the agent.
+    expect(service.getError()).toMatch(/stopped this turn/i);
+  });
+
+  it("records prompt run errors and consumes overrides for the attempted turn", async () => {
+    const failingStream: StreamFn = (() => {
+      throw new Error("stream failed");
+    }) as unknown as StreamFn;
+    const { service, settings } = makeService(failingStream);
+
+    service.setModelOverride("anthropic/claude-3.5-sonnet");
+    await service.sendPrompt("fail");
+
+    expect(service.getError()).toBe("stream failed");
+    expect(service.getModelOverride()).toBeNull();
+    expect(service.getActiveModelId()).toBe(settings.openrouterModel);
+    expect(service.getActiveThinkingLevel()).toBe(settings.thinkingLevel);
+  });
+
+  it("reports a friendly error when no API key is configured", async () => {
+    const { service, settings } = makeService(cannedStreamFn("unused"));
+    settings.openrouterApiKey = "";
+    service.setModelOverride("anthropic/claude-3.5-sonnet");
+
+    await service.sendPrompt("Hi");
+
+    expect(service.getError()).toMatch(/API key/);
+    expect(service.getMessages()).toHaveLength(0);
+    expect(service.getModelOverride()).toBe("anthropic/claude-3.5-sonnet");
+  });
+});

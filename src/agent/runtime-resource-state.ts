@@ -1,0 +1,174 @@
+import type { App } from "obsidian";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { Skill } from "../skills/skill-prompt";
+import type { AgenticChatSettings } from "../settings";
+import type { WebFetcher } from "../tools/web-fetch";
+import type { AskUserHandler } from "../tools/ask-user-tool";
+import type { SkillScaffolder } from "../tools/skill-tools";
+import type { ReadMemo } from "../vault/read-memo";
+import type { ToolArtifactStoreLike } from "../artifacts/tool-artifact-store";
+import type { AgentRole } from "./subagents";
+import {
+  EMPTY_AGENT_RUNTIME_RESOURCES,
+  buildAgentParentTools,
+  composeAgentSystemPrompt,
+  loadAgentRuntimeResources,
+  type AgentRuntimeResources,
+} from "./runtime-resources";
+import { SkillLoadRegistry } from "../skills/skill-load-state";
+import {
+  AzhenMemoryClient,
+  AzhenMemoryRuntime,
+  type AzhenMemoryTurnContext,
+} from "../integrations/azhen-memory";
+import {
+  createToolBudgetState,
+  DEFAULT_TOOL_BUDGET_SETTINGS,
+  resetToolBudgetState,
+  type ToolBudgetSnapshot,
+} from "./tool-budget";
+
+export interface BuildParentToolsOptions {
+  contextWindow?: number;
+}
+
+export interface AgentRuntimeResourceStateOptions {
+  app: App;
+  getSettings: () => AgenticChatSettings;
+  readMemo: ReadMemo;
+  webFetch: WebFetcher;
+  askUser?: AskUserHandler;
+  saveSettings?: () => void | Promise<void>;
+  artifactStore?: ToolArtifactStoreLike;
+  skillScaffolder?: SkillScaffolder;
+  azhenMemoryFetch?: typeof fetch;
+  getAzhenMemoryTurnContext?: () => AzhenMemoryTurnContext;
+}
+
+export class AgentRuntimeResourceState {
+  private resources: AgentRuntimeResources = EMPTY_AGENT_RUNTIME_RESOURCES;
+  private reloadedAt: string | null = null;
+  private readonly toolBudgetState = createToolBudgetState();
+  private readonly skillLoads = new SkillLoadRegistry();
+  private readonly azhenMemory?: AzhenMemoryRuntime;
+  private toolBudgetSnapshot: ToolBudgetSnapshot = {
+    enabled: DEFAULT_TOOL_BUDGET_SETTINGS.enabled,
+    active: false,
+    thresholdPercent: DEFAULT_TOOL_BUDGET_SETTINGS.thresholdPercent,
+    triggeredAtToolSchemaPercent: null,
+    toolSchemaTokens: null,
+    contextWindow: null,
+    droppedTools: [],
+  };
+
+  constructor(private readonly options: AgentRuntimeResourceStateOptions) {
+    if (options.getAzhenMemoryTurnContext) {
+      this.azhenMemory = new AzhenMemoryRuntime(
+        new AzhenMemoryClient(options.app, { fetch: options.azhenMemoryFetch }),
+      );
+    }
+  }
+
+  get current(): AgentRuntimeResources {
+    return this.resources;
+  }
+
+  get lastReloadAt(): string | null {
+    return this.reloadedAt;
+  }
+
+  getSkills(): Skill[] {
+    return this.resources.skills;
+  }
+
+  get skillLoadRegistry(): SkillLoadRegistry {
+    return this.skillLoads;
+  }
+
+  getProfiles(): AgentRole[] {
+    return this.resources.profiles;
+  }
+
+  getToolBudgetSnapshot(): ToolBudgetSnapshot {
+    return this.toolBudgetSnapshot;
+  }
+
+  isPathIgnored(path: string): boolean {
+    return this.resources.ignoreMatcher(path);
+  }
+
+  clearSessionState(): void {
+    this.skillLoads.clear();
+    resetToolBudgetState(this.toolBudgetState);
+    const settings = this.options.getSettings();
+    this.toolBudgetSnapshot = {
+      enabled: settings.toolBudget.enabled,
+      active: false,
+      thresholdPercent: settings.toolBudget.thresholdPercent,
+      triggeredAtToolSchemaPercent: null,
+      toolSchemaTokens: null,
+      contextWindow: null,
+      droppedTools: [],
+    };
+  }
+
+  async reload(): Promise<AgentRuntimeResources> {
+    this.resources = await loadAgentRuntimeResources(
+      this.options.app,
+      this.options.getSettings(),
+      this.options.webFetch,
+      this.options.saveSettings,
+      this.options.artifactStore,
+    );
+    // Prune any loaded skill that disappeared (plugin disabled/removed)
+    this.skillLoads.prune(new Set(this.resources.skills.map((s) => s.name)));
+    this.reloadedAt = new Date().toISOString();
+    return this.resources;
+  }
+
+  composeSystemPrompt(settings: AgenticChatSettings, activeModelId: string): string {
+    return composeAgentSystemPrompt(
+      settings,
+      this.resources,
+      this.selfAwarenessOverlay(activeModelId),
+      this.skillLoads,
+      this.azhenMemory?.composeSystemOverlay(),
+    );
+  }
+
+  async refreshForPrompt(): Promise<void> {
+    await this.azhenMemory?.refreshContext();
+  }
+
+  buildParentTools(
+    settings: AgenticChatSettings,
+    subagentTool?: AgentTool,
+    buildOptions: BuildParentToolsOptions = {},
+  ): AgentTool[] {
+    const result = buildAgentParentTools({
+      app: this.options.app,
+      settings,
+      resources: this.resources,
+      readMemo: this.options.readMemo,
+      webFetch: this.options.webFetch,
+      artifactStore: this.options.artifactStore,
+      askUser: this.options.askUser,
+      subagentTool,
+      contextWindow: buildOptions.contextWindow,
+      toolBudgetState: this.toolBudgetState,
+      skillScaffolder: this.options.skillScaffolder,
+      skillLoadRegistry: this.skillLoads,
+      azhenMemoryTools:
+        this.azhenMemory && this.options.getAzhenMemoryTurnContext
+          ? this.azhenMemory.createTools(this.options.getAzhenMemoryTurnContext)
+          : undefined,
+      azhenMemoryEnabled: this.azhenMemory?.isConfigured() ?? false,
+    });
+    this.toolBudgetSnapshot = result.toolBudget;
+    return result.tools;
+  }
+
+  private selfAwarenessOverlay(activeModelId: string): string {
+    return `Identity: you are the "agentic-chat" Obsidian plugin. You are currently using the model "${activeModelId}".`;
+  }
+}

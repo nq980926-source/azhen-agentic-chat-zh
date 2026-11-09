@@ -1,0 +1,213 @@
+import type { Skill } from "./skill-prompt";
+import { parseSkillMarkdown } from "./skill-format";
+
+/** Marker `filePath` for skills that ship with the plugin (no vault file backs them). */
+export const BUILTIN_SKILL_LOCATION = "(built-in)";
+
+/**
+ * Built-ins are full Agent Skills documents (frontmatter + body) parsed through
+ * the same `parseSkillMarkdown` primitive as plugin-loaded skills, so every
+ * skill in the plugin conforms to the same schema.
+ */
+const SELF_KNOWLEDGE_DOC = `---
+name: self-knowledge
+description: >-
+  Plugin self-knowledge: tools inventory, edit semantics, constraints, error
+  patterns, doomloop guards, and plugin URLs. Consult when stuck or when the
+  user is unhappy.
+---
+# Self-knowledge
+
+Consult this skill proactively when: the user is unhappy with how the agent is working, you see repeated tool-call errors on the same operation, a doomloop is detected, or you are asked about your own capabilities, constraints, or plugin identity.
+
+## Tools inventory
+
+You have these tool categories. Each is callable via function call when present in your active tool set; some may be dropped by the tool budget (see below).
+
+- **Vault**: read, vault_inspect, write, edit, rename, delete, set_properties. vault_inspect covers listing folders, searching names/content, the active note, local graph, and frontmatter. Standalone ls, search, grep, find, get_active_note, get_backlinks, get_links, local_graph, and get_properties exist only in compatibility mode — they are not in your active tool set.
+- **Web** (optional): web_search, fetch_url.
+- **Subagent** (optional): subagent — delegate focused subtasks to specialist child agents. One call = one subagent ({agent, task}); make several parallel calls to delegate multiple tasks (up to 10 run at once). Do not spawn subagents after being told not to.
+- **Artifacts** (optional): list_artifacts, read_artifact, search_artifact, export_artifact.
+- **Memory** (optional): search_memory.
+- **Documents** (optional): import_pdf, import_document.
+- **MCP** (optional): remote tools from configured MCP servers.
+- **Ask-user**: ask_user — ask the user a question with optional choices.
+- **Read-skill**: read_skill — load the full body of any skill by name, including this one.
+- **Skill authoring**: create_skill — scaffold a single-skill package through the New skill wizard writer. Prefer it over hand-writing files under the plugins folder with \`write\` (generic file tools go stale on dot-folders).
+
+## Edit semantics
+
+- Read a note before editing it.
+- Use \`edit\` for small, exact changes (oldText/newText). It preserves the rest of the file.
+- Use \`write\` to create a new file or fully replace an existing one.
+- Use \`set_properties\` for frontmatter/property-only changes; do not rewrite raw YAML by hand.
+- Copying a skill? \`read_skill\` strips frontmatter — use \`read\` on the SKILL.md file for a byte-exact copy.
+
+## Approval modes and boundaries
+
+- Mutating tools (write, edit, rename, delete, set_properties) pass through an approval gate. The user or policy may deny them.
+- If a tool action is denied, treat it as a boundary, not a system or tool failure. Do not retry the same denied mutation. Explain the boundary and choose a safe alternative.
+- Deleting needs a plain, undoubted user request for that exact path — never assume. When ambiguous, ask back with \`ask_user\` first.
+- Recursive folder delete (\`delete\` with \`recursive:true\`) ONLY after the user undoubtedly, clearly, plainly asked to delete that exact folder and its contents. Ask back even if slightly unsure; never recursive-delete on assumption.
+
+## Tool budget behavior
+
+- Optional tools (web, MCP, subagent, artifacts, document import) may be silently dropped when the total tool-schema size exceeds a threshold (default 2% of the context window).
+- If a tool you expected is missing, it was likely withheld by the budget, not broken. Use the diagnostics readout to check dropped tools.
+
+## Context hygiene
+
+- Attachments and the active note may appear in the prompt as path-only references when they are large or restricted. If you only see a path and need the contents, call read.
+- Do not re-read a note whose content is already in this conversation just to "check" — it is above.
+- Use vault_inspect or a bounded read (startLine/endLine or offset/limit) when you need a specific part of a large file.
+- Pay attention to token usage and context bloat. Prefer vault_inspect for vault lookups and bounded reads first.
+
+## Paths and privacy
+
+- All paths are vault-relative (e.g. "Folder/Note.md"); never use absolute paths.
+- Some paths are ignore-listed (private) and can never be read, listed, or searched. Treat them as if they do not exist, and never try to work around that.
+
+## Doomloop guard
+
+- If the same tool fails more than twice on the same path/operation, stop. Do not retry the identical call again.
+- Consult this skill, then ask the user or switch to a different approach (e.g., vault_inspect to verify the path, or ask_user for clarification).
+
+## Error pattern catalog
+
+- Permission denied = boundary; do not retry.
+- Not found → use vault_inspect first; do not guess paths.
+- Tool budget dropped optional tool = withheld, not broken; check diagnostics.
+- Repeated identical errors → doomloop; escalate to user.
+
+## Model identity
+
+- You may be switched between models mid-session. State your current model when asked.
+- You are the "agentic-chat" Obsidian plugin.
+
+## Plugin URLs
+
+- Plugin page: https://community.obsidian.md/plugins/agentic-chat
+- Source repository: https://github.com/tardigrde/obsidian-agentic-chat
+- Report issues: https://github.com/tardigrde/obsidian-agentic-chat/issues
+
+When a user reports a bug or unexpected behavior, you can point them to the issues URL above to open a new issue.`;
+
+const DEEP_RESEARCH_DOC = `---
+name: deep-research
+description: >-
+  Multi-step web research: plan, search, read sources, then write a cited
+  research note into the vault. Requires web access.
+---
+# Deep research
+
+Run a subagent-backed research loop on the open web and capture the findings as a cited note in the vault. You are the supervisor: plan the investigation, dispatch children with the \`subagent\` tool, verify their evidence, synthesize the final note, then save it.
+
+Follow these steps:
+
+1. **Plan as supervisor.** Restate the question in one line, then list the 3-6 sub-questions you must answer. If the scope is ambiguous, ask the user one clarifying question before searching.
+2. **Dispatch parallel searchers.** Make several parallel \`subagent\` calls, one per \`explorer\` child, each \`{agent: "explorer", task: "<sub-question>"}\`, to run 2-6 explorers at once. Give each child one focused sub-question and explicitly tell it to use \`web_search\` and \`fetch_url\`, fetch promising results before relying on them, and return claim-by-claim evidence with source artifact ids and URLs.
+3. **Read and consolidate evidence.** Inspect child summaries. Use \`read_artifact\` or \`search_artifact\` for saved source artifacts when a claim depends on a large fetched source. Run extra \`web_search\`/\`fetch_url\` yourself only to close obvious gaps.
+4. **Dispatch an adversarial verifier.** Use \`subagent\` to run another \`explorer\` (adversarial review) on your draft claim set and source list. Ask it to flag unsupported claims, stale/low-authority sources, missing citations, and contradictions.
+5. **Synthesize.** Write the answer in your own words, organized by sub-question. Note where sources disagree or evidence is thin; do not paper over uncertainty.
+6. **Cite.** Every non-obvious claim must connect to evidence: prefer saved source artifact citations when available, or inline Markdown links \`[label](https://...)\`. End the note with a "## Sources" list of every source artifact id and URL you relied on. Never cite a page you did not actually fetch or inspect.
+7. **Save.** Write the result as a Markdown note in the vault (ask the user for a path/folder if none was given). Include the original question, the date, a short methods note naming the subagent team and verifier, and the Sources list. Briefly confirm the path you wrote.
+
+Constraints:
+- Stay within the user's question; don't pad the note with unrelated background.
+- Distinguish what the sources say from your own inference.
+- If \`subagent\` is unavailable, say you are falling back to a single-agent research loop and still use \`web_search\`, \`fetch_url\`, source artifacts, citations, and verification.
+- If web access fails or returns nothing useful, say so plainly rather than inventing sources.`;
+
+const INSTALL_PLUGIN_DOC = `---
+name: install-plugin
+description: >-
+  Install an agent plugin (Agent Plugins 1.0.0 packages that add skills or MCP
+  servers) from a GitHub URL, a local folder, or an archive. Consult when the
+  user wants new skills, a new MCP server, or asks about agent plugins.
+---
+
+# Install plugin
+
+Agent plugins are packages in the vault's plugins folder (default \`.agentic-plugins\`). Each package has a \`plugin.json\` (Agent Plugins 1.0.0 \`$schema\`), optional \`mcp.json\`, and a \`skills/\` directory holding one folder per skill (\`skills/<name>/SKILL.md\`). The Resources tab in plugin settings lists them.
+
+## How the user installs a plugin
+
+The settings Resources tab has an **Install plugin** button. It accepts:
+
+- A GitHub URL: \`owner/repo\`, \`https://github.com/owner/repo\`, \`/tree/<ref>[/subfolder]\`, \`/blob/<ref>/<path>\` (single skill file), \`/archive/<...>.zip|.tar.gz\`, or a direct \`.zip\`/\`.tar.gz\`/\`.tgz\` URL.
+- A folder picked from the vault (desktop only).
+- An archive downloaded to the vault.
+
+Claude/Copilot/VS Code plugin packages are converted automatically: skills are copied whole (scripts, references, assets), stdio MCP servers are skipped (Obsidian cannot run subprocesses), \`http\` servers become \`streamable-http\`, and \`${"\u0024"}{CLAUDE_PLUGIN_ROOT}\` becomes \`${"\u0024"}{PLUGIN_ROOT}\`.
+
+## Supporting the user
+
+- If the user names a plugin to install, prefer pointing them at the **Install plugin** button over editing files by hand. It converts, sanitizes skill frontmatter, and writes a spec-valid package.
+- To install from a repository subfolder (e.g. a repo with many plugins), use the \`/tree/<ref>/<subfolder>\` form of the GitHub URL.
+- After install, tell the user the plugin now appears in the Resources tab and that MCP servers from imported plugins start **disabled** until enabled in the MCP tab.
+- The plugins folder is a dot-folder: hidden in the file explorer. Use **Open folder** on a plugin row to reveal it, or tell the user to toggle "Show hidden files" in Obsidian's explorer menu.
+- When the user wants a new skill of their own, use the \`create_skill\` tool (same writer as the **New skill** wizard) instead of hand-writing files with \`write\` — generic file tools cannot reliably create dot-folder paths. The vault also ships an empty \`my-skills\` package as the user's personal collection space; single-skill packages are fine, \`my-skills\` is for hand-curated customs.
+
+## Authoring plugins
+
+A minimal package:
+
+\`\`\`
+.agentic-plugins/my-plugin/
+  plugin.json     # $schema + name + version + description
+  skills/
+    my-skill/
+      SKILL.md    # frontmatter: name, description (+ license/compatibility/metadata/allowed-tools)
+      scripts/    # optional helpers
+      references/ # optional reference docs
+\`\`\`
+
+\`plugin.json\` example:
+
+\`\`\`json
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "my-plugin",
+  "version": "1.0.0",
+  "description": "Does the thing."
+}
+\`\`\`
+
+Skill \`name\` frontmatter must equal the skill folder name; other frontmatter fields are ignored. When the user wants a new skill of their own, scaffold it with the \`create_skill\` tool (or point them at the **New skill** wizard on the Resources tab) instead of hand-writing files.
+
+## Limits
+
+- Only \`streamable-http\` MCP servers run inside Obsidian (no stdio subprocesses, no \`command\` entries).
+- \`commands/*.md\` and \`hooks/\` from Claude plugins are not loadable and are dropped on import (with a report).
+- Marketplace catalogs (\`marketplace.json\`) are shown as pick lists for \`./\`-relative entries only; git/npm/archive sources are listed but not fetched.`;
+
+/** The self-knowledge skill: plugin capabilities, constraints, error patterns, doomloop guards, and URLs. Always available. */
+export const SELF_KNOWLEDGE_SKILL: Skill = parseSkillMarkdown(
+  SELF_KNOWLEDGE_DOC,
+  BUILTIN_SKILL_LOCATION,
+).skill as Skill;
+
+/** The deep-research skill: plan → search → read → synthesize → cite → save. */
+export const DEEP_RESEARCH_SKILL: Skill = parseSkillMarkdown(DEEP_RESEARCH_DOC, BUILTIN_SKILL_LOCATION).skill as Skill;
+
+/** The install-plugin skill: how to bring agent plugins into the vault. Always available. */
+export const INSTALL_PLUGIN_SKILL: Skill = parseSkillMarkdown(INSTALL_PLUGIN_DOC, BUILTIN_SKILL_LOCATION).skill as Skill;
+
+/**
+ * Skills that ship with the plugin (no vault folder needed).
+ * Self-knowledge and install-plugin are always present; deep-research is
+ * gated on web access. The same documents are materialized to the vault as
+ * the `builtins` agent plugin package when that package is absent.
+ */
+export function builtinSkills(webEnabled: boolean): Skill[] {
+  return webEnabled
+    ? [SELF_KNOWLEDGE_SKILL, DEEP_RESEARCH_SKILL, INSTALL_PLUGIN_SKILL]
+    : [SELF_KNOWLEDGE_SKILL, INSTALL_PLUGIN_SKILL];
+}
+
+/** Source documents for the materialized `builtins` package. */
+export const BUILTIN_SKILL_DOCS: ReadonlyArray<{ name: string; doc: string }> = [
+  { name: "self-knowledge", doc: SELF_KNOWLEDGE_DOC },
+  { name: "deep-research", doc: DEEP_RESEARCH_DOC },
+  { name: "install-plugin", doc: INSTALL_PLUGIN_DOC },
+];

@@ -1,0 +1,20 @@
+node_modules/
+main.js
+*.js.map
+coverage/
+.stryker-tmp/
+reports/mutation/
+.DS_Store
+.env
+.env.*
+!.env.example
+DOGFOOD_BUGS.md
+docs/.vitepress/cache/
+docs/.vitepress/dist/
+data.json
+sessions/
+
+# e2e (wdio-obsidian-service): downloaded Obsidian builds + run logs
+.obsidian-cache/
+logs/
+test/e2e/vault/.obsidian/

@@ -1,0 +1,567 @@
+import { describe, expect, it } from "vitest";
+import { TFile, TFolder, type App } from "obsidian";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { ApprovalAuditInput, CheckpointAuditInput } from "../src/agent/action-audit-log";
+import type { FileCheckpoint } from "../src/agent/file-checkpoints";
+import {
+  AgentToolCallController,
+  STOPPED_APPROVAL_REASON,
+  type ToolApprovalRequest,
+  type UserApprovalChoice,
+} from "../src/agent/tool-call-controller";
+import { SubagentRegistry } from "../src/tools/subagent-tool";
+import type { AgentRole } from "../src/agent/subagents";
+import { DEFAULT_SETTINGS, type AgenticChatSettings } from "../src/settings";
+import { createMcpServerSettings } from "../src/mcp/settings";
+import { FakeVault } from "./helpers/fake-vault";
+
+function makeController(
+  options: {
+    settings?: Partial<AgenticChatSettings>;
+    confirmToolCall?: (request: ToolApprovalRequest, signal?: AbortSignal) => Promise<UserApprovalChoice>;
+    tools?: AgentTool[];
+    profiles?: AgentRole[];
+    app?: App;
+    recordApproval?: (input: ApprovalAuditInput) => Promise<void> | void;
+    recordCheckpoint?: (input: CheckpointAuditInput) => Promise<void> | void;
+    recordFileCheckpoint?: (checkpoint: FileCheckpoint) => Promise<void> | void;
+  } = {},
+): { controller: AgentToolCallController; requests: ToolApprovalRequest[]; undoNotifications: { count: number } } {
+  const settings: AgenticChatSettings = {
+    ...DEFAULT_SETTINGS,
+    openrouterApiKey: "test-key",
+    ...options.settings,
+    approval: { ...DEFAULT_SETTINGS.approval, ...(options.settings?.approval ?? {}) },
+  };
+  const requests: ToolApprovalRequest[] = [];
+  const undoNotifications = { count: 0 };
+  const controller = new AgentToolCallController({
+    app: options.app ?? fakeApp().app,
+    getSettings: () => settings,
+    confirmToolCall: async (request, signal) => {
+      requests.push(request);
+      return options.confirmToolCall ? options.confirmToolCall(request, signal) : { approved: true, remember: false };
+    },
+    getTools: () => options.tools ?? [{ name: "write", label: "Write file" } as AgentTool],
+    getProfiles: () => options.profiles ?? [],
+    onUndoApplied: () => {
+      undoNotifications.count += 1;
+    },
+    recordApproval: options.recordApproval,
+    recordCheckpoint: options.recordCheckpoint,
+    recordFileCheckpoint: options.recordFileCheckpoint,
+    subagentRegistry: new SubagentRegistry(),
+  });
+  return { controller, requests, undoNotifications };
+}
+
+function fakeApp(): { app: App; vault: FakeVault } {
+  const vault = new FakeVault() as FakeVault & {
+    getFolderByPath: (path: string) => TFolder | null;
+  };
+  vault.getFolderByPath = (path) => {
+    const entry = vault.getAbstractFileByPath(path);
+    return entry instanceof TFolder ? entry : null;
+  };
+  return {
+    app: {
+      vault,
+      fileManager: {
+        trashFile: async (file: TFile) => vault.trash(file),
+      },
+    } as unknown as App,
+    vault,
+  };
+}
+
+describe("AgentToolCallController", () => {
+  it("passes the turn abort signal to the approval prompt", async () => {
+    const abort = new AbortController();
+    let receivedSignal: AbortSignal | undefined;
+    const { controller } = makeController({
+      settings: { mode: "safe", approval: { mutating: "ask", perTool: {}, workingDirs: [] } },
+      confirmToolCall: async (_request, signal) => {
+        receivedSignal = signal;
+        return { approved: false, remember: false };
+      },
+    });
+
+    await controller.beforeToolCall(
+      {
+        toolCall: { id: "call-1", name: "write" },
+        args: { path: "Notes/a.md", content: "hi" },
+      },
+      abort.signal,
+    );
+
+    expect(receivedSignal).toBe(abort.signal);
+  });
+
+  it("latches a stopped approval once for the turn", async () => {
+    const { controller } = makeController({
+      settings: { mode: "safe", approval: { mutating: "ask", perTool: {}, workingDirs: [] } },
+      confirmToolCall: async () => ({
+        approved: false,
+        remember: false,
+        reason: STOPPED_APPROVAL_REASON,
+        stopped: true,
+      }),
+    });
+
+    const decision = await controller.beforeToolCall({
+      toolCall: { id: "call-stop", name: "write" },
+      args: { path: "Notes/a.md", content: "hi" },
+    });
+
+    expect(decision).toMatchObject({ block: true, terminate: true });
+    expect(controller.consumeStopRequested()).toBe(true);
+    expect(controller.consumeStopRequested()).toBe(false);
+  });
+
+  it("does not stop the turn when a deny reuses the stop text as its reason", async () => {
+    const { controller } = makeController({
+      settings: { mode: "safe", approval: { mutating: "ask", perTool: {}, workingDirs: [] } },
+      confirmToolCall: async () => ({
+        approved: false,
+        remember: false,
+        reason: STOPPED_APPROVAL_REASON,
+      }),
+    });
+
+    const decision = await controller.beforeToolCall({
+      toolCall: { id: "call-deny", name: "write" },
+      args: { path: "Notes/a.md", content: "hi" },
+    });
+
+    expect(decision).toEqual({ block: true, reason: STOPPED_APPROVAL_REASON });
+    expect(controller.consumeStopRequested()).toBe(false);
+  });
+
+  it("prompts ask-policy tool calls with the registered tool label", async () => {
+    const { controller, requests } = makeController({
+      settings: { mode: "safe", approval: { mutating: "ask", perTool: {}, workingDirs: [] } },
+      confirmToolCall: async () => ({ approved: false, remember: false }),
+    });
+
+    const decision = await controller.beforeToolCall({
+      toolCall: { id: "call-1", name: "write" },
+      args: { path: "Notes/a.md", content: "hi" },
+    });
+
+    expect(decision).toEqual({ block: true, reason: "The user declined this action." });
+    expect(requests).toEqual([{ toolName: "write", label: "Write file", args: { path: "Notes/a.md", content: "hi" } }]);
+    expect(controller.canUndo()).toBe(false);
+  });
+
+  it("echoes the user's deny reason back to the agent", async () => {
+    const approvals: ApprovalAuditInput[] = [];
+    const { controller, requests } = makeController({
+      settings: { mode: "safe", approval: { mutating: "ask", perTool: {}, workingDirs: [] } },
+      confirmToolCall: async () => ({ approved: false, remember: false, reason: "Wrong file — edit Notes/b.md instead" }),
+      recordApproval: (input) => {
+        approvals.push(input);
+      },
+    });
+
+    const decision = await controller.beforeToolCall({
+      toolCall: { id: "call-1", name: "write" },
+      args: { path: "Notes/a.md", content: "hi" },
+    });
+
+    expect(decision).toEqual({ block: true, reason: "Wrong file — edit Notes/b.md instead" });
+    expect(requests).toHaveLength(1);
+    const denied = approvals.find((approval) => approval.decision === "denied");
+    expect(denied?.reason).toBe("Wrong file — edit Notes/b.md instead");
+  });
+
+  it("falls back to the generic denial message when the user gives no reason", async () => {
+    const approvals: ApprovalAuditInput[] = [];
+    const { controller } = makeController({
+      settings: { mode: "safe", approval: { mutating: "ask", perTool: {}, workingDirs: [] } },
+      confirmToolCall: async () => ({ approved: false, remember: false }),
+      recordApproval: (input) => {
+        approvals.push(input);
+      },
+    });
+
+    const decision = await controller.beforeToolCall({
+      toolCall: { id: "call-1", name: "write" },
+      args: { path: "Notes/a.md", content: "hi" },
+    });
+
+    expect(decision).toEqual({ block: true, reason: "The user declined this action." });
+    expect(approvals.find((approval) => approval.decision === "denied")?.reason).toBe(
+      "The user declined this action.",
+    );
+  });
+
+  it("prompts MCP tool calls through the server egress policy", async () => {
+    const tool = { name: "mcp__docs__resolve_library_id", label: "Docs MCP: Resolve library" } as AgentTool;
+    const { controller, requests } = makeController({
+      settings: {
+        mcp: {
+          enabled: true,
+          proxyUrl: "",
+          noProxy: "localhost,127.0.0.1,::1",
+          servers: [
+            {
+              ...createMcpServerSettings({ id: "docs", name: "Docs MCP", url: "https://mcp.example.com/mcp" }),
+              approval: "ask",
+            },
+          ],
+        },
+      },
+      tools: [tool],
+      confirmToolCall: async () => ({ approved: false, remember: false }),
+    });
+
+    const args = { libraryName: "obsidian" };
+    const decision = await controller.beforeToolCall({
+      toolCall: { id: "call-1", name: tool.name },
+      args,
+    });
+
+    expect(decision).toEqual({ block: true, reason: "The user declined this MCP tool call." });
+    expect(requests).toEqual([{ toolName: tool.name, label: tool.label, args }]);
+  });
+
+
+  it("honors MCP deny policy and per-tool allow overrides", async () => {
+    const toolName = "mcp__docs__resolve_library_id";
+    const baseMcp = {
+      enabled: true,
+      proxyUrl: "",
+      noProxy: "localhost,127.0.0.1,::1",
+      servers: [
+        {
+          ...createMcpServerSettings({ id: "docs", name: "Docs MCP", url: "https://mcp.example.com/mcp" }),
+          approval: "deny" as const,
+        },
+      ],
+    };
+    const denied = makeController({ settings: { mcp: baseMcp } });
+
+    await expect(
+      denied.controller.beforeToolCall({ toolCall: { id: "call-1", name: toolName }, args: {} }),
+    ).resolves.toEqual({
+      block: true,
+      reason: `The "${toolName}" MCP tool is disabled by your MCP approval settings.`,
+    });
+
+    const allowed = makeController({
+      settings: {
+        mcp: baseMcp,
+        approval: { mutating: "ask", perTool: { [toolName]: "allow" }, workingDirs: [] },
+      },
+    });
+    await expect(
+      allowed.controller.beforeToolCall({ toolCall: { id: "call-1", name: toolName }, args: {} }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("auto-approves read-only subagent dispatches when a working set is configured", async () => {
+    const { controller, requests } = makeController({
+      settings: { mode: "safe", approval: { mutating: "ask", perTool: {}, workingDirs: ["Notes"] } },
+      profiles: [
+        {
+          // Arbitrary fixture name, not a built-in role.
+          name: "researcher",
+          description: "Research",
+          systemPrompt: "Research.",
+          toolAllowlist: ["read", "grep", "find"],
+        },
+      ],
+      confirmToolCall: async () => ({ approved: false, remember: false }),
+    });
+
+    const decision = await controller.beforeToolCall({
+      toolCall: { id: "call-1", name: "subagent" },
+      args: { agent: "researcher", task: "look around" },
+    });
+
+    expect(decision).toBeUndefined();
+    expect(requests).toEqual([]);
+  });
+
+  it("blocks a mutating role dispatch when mutating tools are denied", async () => {
+    // No built-in role can mutate, so the deny branch is only reachable via a
+    // custom role with mutating tools — keep it covered with a fixture.
+    const { controller, requests } = makeController({
+      settings: { mode: "safe", approval: { mutating: "deny", perTool: {}, workingDirs: [] } },
+      profiles: [
+        {
+          // Arbitrary fixture name, not a built-in role.
+          name: "editor",
+          description: "Vault editor role",
+          systemPrompt: "Edit.",
+          toolAllowlist: ["read", "edit"],
+        },
+      ],
+      confirmToolCall: async () => ({ approved: true, remember: false }),
+    });
+
+    const decision = await controller.beforeToolCall({
+      toolCall: { id: "call-1", name: "subagent" },
+      args: { agent: "editor", task: "fix it" },
+    });
+
+    expect(decision).toEqual({
+      block: true,
+      reason: "Subagent dispatch is blocked because mutating tools are denied.",
+    });
+    expect(requests).toEqual([]);
+  });
+
+  it("records undo only after a captured mutating call succeeds", async () => {
+    const { app, vault } = fakeApp();
+    await vault.createFolder("Notes");
+    const file = await vault.create("Notes/a.md", "before");
+    const { controller, undoNotifications } = makeController({
+      app,
+      settings: { mode: "yolo", approval: { mutating: "allow", perTool: {}, workingDirs: [] } },
+    });
+
+    const decision = await controller.beforeToolCall({
+      toolCall: { id: "call-1", name: "write" },
+      args: { path: "Notes/a.md", content: "after" },
+    });
+    expect(decision).toBeUndefined();
+    await vault.modify(file, "after");
+    expect(controller.canUndo()).toBe(false);
+
+    await controller.afterToolCall({ toolCall: { id: "call-1" }, isError: false });
+    expect(controller.canUndo()).toBe(true);
+
+    expect(await controller.undoLastChange()).toBe("Reverted Notes/a.md.");
+    expect(vault.contentOf("Notes/a.md")).toBe("before");
+    expect(undoNotifications.count).toBe(1);
+  });
+
+  it("audits approval decisions and pre-change checkpoints", async () => {
+    const { app, vault } = fakeApp();
+    await vault.createFolder("Notes");
+    await vault.create("Notes/a.md", "before");
+    const approvals: ApprovalAuditInput[] = [];
+    const checkpoints: CheckpointAuditInput[] = [];
+    const fileCheckpoints: FileCheckpoint[] = [];
+    const { controller } = makeController({
+      app,
+      settings: { mode: "safe", approval: { mutating: "ask", perTool: {}, workingDirs: [] } },
+      confirmToolCall: async () => ({ approved: true, remember: false }),
+      recordApproval: (input) => {
+        approvals.push(input);
+      },
+      recordCheckpoint: (input) => {
+        checkpoints.push(input);
+      },
+      recordFileCheckpoint: (checkpoint) => {
+        fileCheckpoints.push(checkpoint);
+      },
+    });
+
+    const decision = await controller.beforeToolCall({
+      toolCall: { id: "call-1", name: "write" },
+      args: { path: "Notes/a.md", content: "after", apiKey: "secret" },
+    });
+
+    expect(decision).toBeUndefined();
+    expect(approvals.map((approval) => approval.decision)).toEqual(["requested", "approved"]);
+    expect(approvals.map((approval) => approval.toolCallId)).toEqual(["call-1", "call-1"]);
+    expect(checkpoints).toEqual([
+      {
+        toolCallId: "call-1",
+        toolName: "write",
+        undo: expect.objectContaining({ kind: "content", path: "Notes/a.md", before: "before" }),
+      },
+    ]);
+    expect(fileCheckpoints).toEqual([
+      expect.objectContaining({
+        id: "checkpoint-call-1",
+        toolCallId: "call-1",
+        toolName: "write",
+        entries: [
+          expect.objectContaining({ kind: "content", path: "Notes/a.md", before: "before" }),
+        ],
+      }),
+    ]);
+  });
+
+  it("undoes successful mutations newest-first", async () => {
+    const { app, vault } = fakeApp();
+    await vault.createFolder("Notes");
+    const fileA = await vault.create("Notes/a.md", "before a");
+    const fileB = await vault.create("Notes/b.md", "before b");
+    const { controller, undoNotifications } = makeController({
+      app,
+      settings: { mode: "yolo", approval: { mutating: "allow", perTool: {}, workingDirs: [] } },
+    });
+
+    await controller.beforeToolCall({
+      toolCall: { id: "call-a", name: "write" },
+      args: { path: "Notes/a.md", content: "after a" },
+    });
+    await vault.modify(fileA, "after a");
+    await controller.afterToolCall({ toolCall: { id: "call-a" }, isError: false });
+
+    await controller.beforeToolCall({
+      toolCall: { id: "call-b", name: "write" },
+      args: { path: "Notes/b.md", content: "after b" },
+    });
+    await vault.modify(fileB, "after b");
+    await controller.afterToolCall({ toolCall: { id: "call-b" }, isError: false });
+
+    expect(await controller.undoLastChange()).toBe("Reverted Notes/b.md.");
+    expect(vault.contentOf("Notes/a.md")).toBe("after a");
+    expect(vault.contentOf("Notes/b.md")).toBe("before b");
+
+    expect(await controller.undoLastChange()).toBe("Reverted Notes/a.md.");
+    expect(vault.contentOf("Notes/a.md")).toBe("before a");
+    expect(controller.canUndo()).toBe(false);
+    expect(undoNotifications.count).toBe(2);
+  });
+
+  it("keeps the undo entry available when applying undo fails", async () => {
+    const { app, vault } = fakeApp();
+    await vault.createFolder("Notes");
+    const { controller } = makeController({
+      app,
+      settings: { mode: "yolo", approval: { mutating: "allow", perTool: {}, workingDirs: [] } },
+    });
+
+    await controller.beforeToolCall({
+      toolCall: { id: "call-1", name: "write" },
+      args: { path: "Notes/new.md", content: "created" },
+    });
+    await vault.create("Notes/new.md", "created");
+    await controller.afterToolCall({ toolCall: { id: "call-1" }, isError: false });
+
+    const fileManager = app.fileManager as { trashFile: (file: TFile) => Promise<void> };
+    const originalTrashFile = fileManager.trashFile;
+    fileManager.trashFile = async () => {
+      throw new Error("trash unavailable");
+    };
+
+    expect(await controller.undoLastChange()).toBe("Could not undo: trash unavailable");
+    expect(controller.canUndo()).toBe(true);
+    expect(vault.contentOf("Notes/new.md")).toBe("created");
+
+    fileManager.trashFile = originalTrashFile;
+    expect(await controller.undoLastChange()).toBe("Removed Notes/new.md (it didn't exist before).");
+    expect(controller.canUndo()).toBe(false);
+    expect(vault.getAbstractFileByPath("Notes/new.md")).toBeNull();
+  });
+
+  it("drops captured undo when the tool call fails", async () => {
+    const { app, vault } = fakeApp();
+    await vault.createFolder("Notes");
+    await vault.create("Notes/a.md", "before");
+    const { controller } = makeController({
+      app,
+      settings: { mode: "yolo", approval: { mutating: "allow", perTool: {}, workingDirs: [] } },
+    });
+
+    await controller.beforeToolCall({
+      toolCall: { id: "call-1", name: "write" },
+      args: { path: "Notes/a.md", content: "after" },
+    });
+    await controller.afterToolCall({ toolCall: { id: "call-1" }, isError: true });
+
+    expect(controller.canUndo()).toBe(false);
+    expect(await controller.undoLastChange()).toBe("Nothing to undo.");
+  });
+
+  it("asks for create_skill even in yolo mode (persistent-skill injection guard)", async () => {
+    const { controller, requests } = makeController({
+      settings: { mode: "yolo", approval: { mutating: "allow", perTool: {}, workingDirs: [] } },
+    });
+    const decision = await controller.beforeToolCall({
+      toolCall: { id: "call-1", name: "create_skill" },
+      args: { name: "my-skill", description: "D", body: "B" },
+    });
+    expect(decision).toBeUndefined();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.toolName).toBe("create_skill");
+  });
+
+  it("honors an explicit per-tool allow for create_skill", async () => {
+    const { controller, requests } = makeController({
+      settings: { mode: "safe", approval: { mutating: "ask", perTool: { create_skill: "allow" }, workingDirs: [] } },
+    });
+    const decision = await controller.beforeToolCall({
+      toolCall: { id: "call-1", name: "create_skill" },
+      args: { name: "my-skill", description: "D", body: "B" },
+    });
+    expect(decision).toBeUndefined();
+    expect(requests).toHaveLength(0);
+  });
+
+  it("honors an explicit per-tool deny for create_skill", async () => {
+    const { controller } = makeController({
+      settings: { mode: "yolo", approval: { mutating: "allow", perTool: { create_skill: "deny" }, workingDirs: [] } },
+    });
+    const decision = await controller.beforeToolCall({
+      toolCall: { id: "call-1", name: "create_skill" },
+      args: { name: "my-skill", description: "D", body: "B" },
+    });
+    expect(decision).toEqual({ block: true, reason: expect.any(String) });
+  });
+
+  it("asks for recursive delete even in yolo mode", async () => {
+    const { controller, requests } = makeController({
+      settings: { mode: "yolo", approval: { mutating: "allow", perTool: {}, workingDirs: [] } },
+    });
+    const decision = await controller.beforeToolCall({
+      toolCall: { id: "call-1", name: "delete" },
+      args: { path: "Full", recursive: true },
+    });
+    expect(decision).toBeUndefined();
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.toolName).toBe("delete");
+  });
+
+  it("auto-approves non-recursive delete in yolo mode", async () => {
+    const { controller, requests } = makeController({
+      settings: { mode: "yolo", approval: { mutating: "allow", perTool: {}, workingDirs: [] } },
+    });
+    const decision = await controller.beforeToolCall({
+      toolCall: { id: "call-1", name: "delete" },
+      args: { path: "Note.md" },
+    });
+    expect(decision).toBeUndefined();
+    expect(requests).toHaveLength(0);
+  });
+
+  it("honors an explicit per-tool allow for recursive delete", async () => {
+    const { controller, requests } = makeController({
+      settings: { mode: "yolo", approval: { mutating: "allow", perTool: { delete: "allow" }, workingDirs: [] } },
+    });
+    const decision = await controller.beforeToolCall({
+      toolCall: { id: "call-1", name: "delete" },
+      args: { path: "Full", recursive: true },
+    });
+    expect(decision).toBeUndefined();
+    expect(requests).toHaveLength(0);
+  });
+
+  it("denies create_skill in plan mode", async () => {    const { controller } = makeController({
+      settings: { mode: "plan", approval: { mutating: "ask", perTool: {}, workingDirs: [] } },
+    });
+    const decision = await controller.beforeToolCall({
+      toolCall: { id: "call-1", name: "create_skill" },
+      args: { name: "my-skill", description: "D", body: "B" },
+    });
+    expect(decision).toEqual({ block: true, reason: expect.stringContaining("Plan mode") });
+  });
+
+  it("routes create_skill through ask under a scoped working-dirs config", async () => {
+    const { controller, requests } = makeController({
+      settings: { mode: "safe", approval: { mutating: "ask", perTool: {}, workingDirs: ["Notes"] } },
+    });
+    const decision = await controller.beforeToolCall({
+      toolCall: { id: "call-1", name: "create_skill" },
+      args: { name: "my-skill", description: "D", body: "B" },
+    });
+    expect(decision).toBeUndefined();
+    expect(requests).toHaveLength(1);
+  });
+});

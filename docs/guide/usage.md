@@ -1,0 +1,74 @@
+# Daily usage
+
+Open Agentic Chat from the ribbon icon or the **Agentic Chat: Open chat** command.
+
+## Send prompts
+
+Type a message and press Enter. Use Shift+Enter for a newline.
+
+The active note is attached automatically unless it is ignored, is a root standing-instruction file (`AGENTS.md`, `CLAUDE.md`, or `GEMINI.md`), or you dismissed the chip for the current session. Standing-instruction files are implicit context whenever present. Add more context with:
+
+- `@note`
+- `@note#heading`
+- `@note^block-id`
+- the folder button in the composer
+- drag and drop from the file explorer
+- Obsidian context menus for notes, folders, or selected editor text
+
+## Watch tool calls
+
+Tool calls render inline in the transcript. You can expand them to inspect arguments, results, and timing.
+
+Mutating calls follow the approval policy. When a call is set to **ask**, the plugin shows the pending arguments and a line-level diff (red removed, green added) before anything changes.
+
+## Safe, YOLO, and plan modes
+
+**Safe** follows your configured approval settings.
+
+**YOLO** auto-approves most mutating tools until you switch back. Recursive folder deletes still ask, and a per-tool deny still wins.
+
+`/plan` enters sticky read-only planning mode. It blocks mutations until you leave. To leave, click the **Plan** badge in chat or run `/config` to switch back to Safe or YOLO.
+
+Run `/compact [instructions]` to summarize older turns on demand. The optional instructions are passed to the compaction request, so important details survive the summary.
+
+## Memory
+
+Add long-term memories with `/memory add [kind] [scope] <text>`. Kinds are `preference`, `fact`, `instruction`, or `summary`. Scopes are `global` or `vault`.
+
+Review stored memories with `/memory review`. Export them with `/memory export`. Clear everything with `/memory clear --confirm`.
+
+The agent retrieves memories explicitly through the `search_memory` tool. The plugin never injects them automatically.
+
+## Semantic indexing
+
+Run `/semantic-index start` to build a vector index over your current scope (vault, folder, tag, or the active note's folder). A full-vault build requires `/semantic-index start vault --confirm-vault`. Check status with `/semantic-index status` and estimate cost with `/semantic-index estimate`.
+
+Cancel an in-progress build with `/semantic-index cancel`.
+
+## Todo tracking
+
+Use `/todo add <milestone>` to add a milestone. Update status with `/todo set <id> <pending|active|done|blocked>`. Track tests with `/todo test <id> <not-run|running|passed|failed|skipped>`. Attach checkpoint commits with `/todo commit <id> <commit>`, notes with `/todo note <id> <note>`, and retitle the plan with `/todo title <name>`.
+
+The plan tracker panel shows live progress.
+
+## Real-time controls
+
+While the agent streams a response, you can:
+
+- `/steer [text]` steers the current turn mid-stream.
+- `/follow-up [text]` queues a follow-up message behind the active turn.
+- `/redirect [text]` stops the active turn and answers the new text instead.
+
+## Export conversations
+
+Run `/export` to save the current conversation as a Markdown note in the vault.
+
+## Reasoning effort
+
+Set your reasoning effort with `/effort [level]` (for example, `/effort high`). The choice persists across messages. Change it with `/effort` again or with the effort knob in the composer.
+
+## Undo and retry
+
+Use `/undo` to revert the last vault mutation made by the agent.
+
+Every assistant answer has copy and retry actions. Click a sent message to rewind to that prompt, edit it, and regenerate from that point.

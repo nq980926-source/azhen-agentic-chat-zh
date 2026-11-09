@@ -1,0 +1,54 @@
+import type { SessionInfo } from "../session/session-manager";
+import { t } from "../i18n";
+import type { SessionListCallbacks } from "./session-list-modal";
+import type { WorkflowRenderer } from "./workflow-renderer";
+
+export interface SessionWorkflowControllerOptions {
+  listSessions: () => Promise<SessionInfo[]>;
+  activeSessionPath: () => string | null;
+  clearSessions: () => Promise<number>;
+  loadSession: (path: string) => void;
+  deleteSession: (path: string) => Promise<void>;
+  renameSession: (path: string, name: string) => Promise<void>;
+  openList: (sessions: SessionInfo[], activePath: string | null, callbacks: SessionListCallbacks) => void;
+  afterClear: () => void;
+  renderer: WorkflowRenderer;
+}
+
+export class SessionWorkflowController {
+  constructor(private readonly options: SessionWorkflowControllerOptions) {}
+
+  async run(arg: string): Promise<void> {
+    this.options.renderer.clear();
+    const [subcommand, ...rest] = arg.trim().split(/\s+/).filter(Boolean);
+    if (!subcommand) {
+      await this.openList();
+      return;
+    }
+    if (subcommand !== "clear") {
+      this.options.renderer.error(t("sessions.clearUsage"));
+      return;
+    }
+    if (!rest.includes("--confirm")) {
+      this.options.renderer.error(t("sessions.clearConfirm"));
+      return;
+    }
+    const deleted = await this.options.clearSessions();
+    // -1 means the clear failed and the caller already reported it. Do not run
+    // afterClear (which resets the transcript) or print a success line.
+    if (deleted < 0) return;
+    this.options.afterClear();
+    this.options.renderer.info(t("sessions.title"), [
+      [t("sessions.deletedLabel"), t(deleted === 1 ? "sessions.deletedOne" : "sessions.deletedMany", { count: deleted })],
+    ]);
+  }
+
+  private async openList(): Promise<void> {
+    const sessions = (await this.options.listSessions()).filter((session) => session.messageCount > 0);
+    this.options.openList(sessions, this.options.activeSessionPath(), {
+      load: (session) => this.options.loadSession(session.path),
+      delete: (session) => this.options.deleteSession(session.path),
+      rename: (session, name) => this.options.renameSession(session.path, name),
+    });
+  }
+}

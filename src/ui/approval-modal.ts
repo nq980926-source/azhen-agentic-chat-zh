@@ -1,0 +1,457 @@
+import { App, ButtonComponent, Modal, Setting, TFile } from "obsidian";
+import type { ToolApprovalRequest } from "../agent/agent-service";
+import { STOPPED_APPROVAL_REASON, type UserApprovalChoice } from "../agent/tool-call-controller";
+import { buildEditPreview, buildExactEditPreviewWindow, type EditPreview } from "../agent/edit-preview";
+import { slugifyPluginName } from "../plugins/manifest";
+import { approvalPreviewNeedsContent, toolApprovalDescription } from "../tools/tool-contracts";
+import { compactDiffLines, diffLines, diffStat, diffTooLarge, type CompactDiffWindow } from "../vault/diff";
+import { normalizeVaultPath } from "../vault/path";
+import { t } from "../i18n";
+
+/** Cap diff lines rendered in the modal so a huge change can't bloat the dialog. */
+const MAX_DIFF_DISPLAY_LINES = 400;
+const DEFAULT_DIFF_CONTEXT_LINES = 5;
+
+/** Confirm dialog shown when a tool's approval policy is "ask". */
+export class ApprovalModal extends Modal {
+  private decided = false;
+  private denyArmed = false;
+  private resolve: ((choice: UserApprovalChoice) => void) | null = null;
+  private abortSignal?: AbortSignal;
+  private abortListener?: () => void;
+  private opened = false;
+
+  constructor(
+    app: App,
+    private readonly request: ToolApprovalRequest,
+    private readonly onStop?: () => void,
+  ) {
+    super(app);
+  }
+
+  ask(signal?: AbortSignal): Promise<UserApprovalChoice> {
+    return new Promise((resolve) => {
+      this.resolve = resolve;
+      this.abortSignal = signal;
+      if (signal?.aborted) {
+        this.settle({ approved: false, remember: false, reason: STOPPED_APPROVAL_REASON, stopped: true });
+        return;
+      }
+      this.abortListener = () =>
+        this.settle({ approved: false, remember: false, reason: STOPPED_APPROVAL_REASON, stopped: true });
+      signal?.addEventListener("abort", this.abortListener, { once: true });
+      this.opened = true;
+      this.open();
+    });
+  }
+
+  onOpen(): void {
+    const { contentEl, titleEl } = this;
+    const label = this.request.sessionLabel
+      ? t("approval.sessionAllowTitle", { session: this.request.sessionLabel, label: this.request.label })
+      : t("approval.allowTitle", { label: this.request.label });
+    titleEl.setText(label);
+    if (this.isCreateSkillRequest()) {
+      contentEl.createEl("p", {
+        cls: "agentic-chat-approval-warning",
+        text: t("approval.skillWarning"),
+      });
+    }
+    if (this.request.sessionLabel) {
+      contentEl.createEl("p", {
+        cls: "agentic-chat-approval-session",
+        text: t("approval.session", { session: this.request.sessionLabel }),
+      });
+    }
+    contentEl.addClass("agentic-chat-approval");
+
+    contentEl.createEl("p", {
+      text: toolApprovalDescription(this.request.toolName),
+    });
+    const previewEl = contentEl.createDiv({ cls: "agentic-chat-approval-preview" });
+    if (this.isCreateSkillRequest()) {
+      // Full-body preview for create_skill: the generic 2000-char raw-args dump
+      // can hide a malicious tail. Render the resolved slug, target package
+      // path, and the complete scrollable body instead. Falls through to the
+      // shared remember/buttons wiring below.
+      this.renderCreateSkillPreview(previewEl);
+    } else {
+      // Render the change preview asynchronously (it reads the file from the vault);
+      // show the raw arguments immediately as a fallback until it resolves.
+      previewEl.createEl("pre", { cls: "agentic-chat-approval-args", text: previewArgs(this.request.args) });
+      void this.renderPreview(previewEl);
+    }
+
+    let remember = false;
+    // Persistent prompt-implant primitives must never offer "don't ask again":
+    // one fatigued Allow+remember would auto-approve all future skill writes.
+    const isPersistentSkillTool =
+      this.request.toolName === "create_skill" ||
+      this.request.toolName === "load_skill" ||
+      this.request.toolName === "unload_skill";
+    if (isPersistentSkillTool) {
+      contentEl.createEl("p", {
+        cls: "agentic-chat-approval-note",
+        text: t("approval.cannotRemember"),
+      });
+    } else {
+      const rememberSetting = new Setting(contentEl)
+        .setName(t("approval.remember"))
+        .setDesc(t("approval.rememberDesc"))
+        .addToggle((toggle) => toggle.setValue(false).onChange((value) => (remember = value)));
+      for (const eventName of ["click", "mousedown", "mouseup", "keydown"]) {
+        rememberSetting.settingEl.addEventListener(eventName, (event) => event.stopPropagation());
+      }
+    }
+
+    if (this.onStop) {
+      new Setting(contentEl).addButton((button) =>
+        button
+          .setButtonText(t("approval.stopTurn"))
+          .setClass("agentic-chat-approval-stop")
+          .onClick(() => this.stopTurn()),
+      );
+    }
+
+    // Two-step deny: the first click arms the flow and reveals an optional
+    // reason field; the second (or Enter in the field) confirms the denial so
+    // the agent learns *why* instead of the generic "user declined" string.
+    let denyButton: ButtonComponent | undefined;
+    const denyReasonEl = contentEl.createDiv({ cls: "agentic-chat-deny-reason" });
+    denyReasonEl.hide();
+    const reasonInput = denyReasonEl.createEl("textarea", {
+      cls: "agentic-chat-deny-reason-input",
+      attr: { placeholder: t("approval.denyReason"), rows: "2" },
+    });
+    reasonInput.addEventListener("keydown", (event) => {
+      if (!denyButton) return;
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        this.decide({ approved: false, remember, reason: reasonInput.value.trim() || undefined });
+      } else if (event.key === "Escape") {
+        // Revert the in-progress deny instead of closing the whole modal.
+        event.stopPropagation();
+        this.disarmDeny(denyButton, denyReasonEl, reasonInput);
+      }
+    });
+
+    new Setting(contentEl)
+      .addButton((button) => {
+        denyButton = button;
+        button
+          .setButtonText(t("common.deny"))
+          .setClass("mod-warning")
+          .onClick(() => {
+            if (!denyButton) return;
+            if (this.denyArmed) {
+              this.decide({ approved: false, remember, reason: reasonInput.value.trim() || undefined });
+            } else {
+              this.armDeny(denyButton, denyReasonEl, reasonInput);
+            }
+          });
+      })
+      .addButton((button) =>
+        button
+          .setButtonText(t("common.allow"))
+          .setCta()
+          .onClick(() => this.decide({ approved: true, remember })),
+      );
+
+    // Enter accepts (Escape already dismisses via the default modal handler).
+    // Let a focused button handle Enter itself so Tab-to-Deny still works.
+    this.scope.register([], "Enter", (event) => {
+      if (this.decided || isInteractiveElement(activeDocument.activeElement)) return;
+      event.preventDefault();
+      if (this.denyArmed) {
+        // Focus left the reason field (e.g. the user clicked the diff preview):
+        // Enter must confirm the in-progress deny, not approve the call.
+        this.decide({ approved: false, remember, reason: reasonInput.value.trim() || undefined });
+      } else {
+        this.decide({ approved: true, remember });
+      }
+      return false;
+    });
+  }
+
+  private armDeny(button: ButtonComponent, container: HTMLElement, input: HTMLTextAreaElement): void {
+    this.denyArmed = true;
+    container.show();
+    button.setButtonText(t("approval.confirmDeny"));
+    input.focus();
+  }
+
+  private disarmDeny(button: ButtonComponent, container: HTMLElement, input: HTMLTextAreaElement): void {
+    this.denyArmed = false;
+    container.hide();
+    button.setButtonText(t("common.deny"));
+    input.value = "";
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+    this.cleanupAbortListener();
+    if (!this.decided) this.resolve?.({ approved: false, remember: false });
+  }
+
+  private stopTurn(): void {
+    if (this.decided) return;
+    // Settle first so pi records a terminating denial. Abort synchronously after
+    // settling: a 0ms timer leaves a window where sibling tool calls prepared in
+    // the same batch can still execute before the turn signal is aborted.
+    this.settle({ approved: false, remember: false, reason: STOPPED_APPROVAL_REASON, stopped: true });
+    this.onStop?.();
+  }
+
+  private settle(choice: UserApprovalChoice): void {
+    if (this.decided) return;
+    this.decided = true;
+    this.cleanupAbortListener();
+    const resolve = this.resolve;
+    this.resolve = null;
+    resolve?.(choice);
+    if (this.opened) this.close();
+  }
+
+  private cleanupAbortListener(): void {
+    if (this.abortSignal && this.abortListener) {
+      this.abortSignal.removeEventListener("abort", this.abortListener);
+    }
+    this.abortSignal = undefined;
+    this.abortListener = undefined;
+  }
+
+  /** Read the target file and render a structured preview of the pending change. */
+  private isCreateSkillRequest(): boolean {
+    return this.request.toolName === "create_skill";
+  }
+
+  /** Structured preview for create_skill: slug + package path + full body (no truncation). */
+  private renderCreateSkillPreview(container: HTMLElement): void {
+    const raw = (this.request.args ?? {}) as { name?: unknown; description?: unknown; body?: unknown; overwrite?: unknown };
+    const requested = typeof raw.name === "string" ? raw.name.trim() : "";
+    const slug = slugifyPluginName(requested);
+    const description = typeof raw.description === "string" ? raw.description : "";
+    const body = typeof raw.body === "string" ? raw.body : "";
+    const overwrite = raw.overwrite === true;
+    const slugNote = slug !== requested.toLowerCase() ? t("approval.slugFrom", { name: requested }) : "";
+    container.createEl("p", {
+      cls: "agentic-chat-approval-summary",
+      text: `${t("approval.createSkill", {
+        slug,
+        path: `.agentic-plugins/${slug}/skills/${slug}/SKILL.md`,
+      })}${slugNote}${overwrite ? t("approval.replaceExisting") : ""}`,
+    });
+    if (description) {
+      container.createEl("p", {
+        cls: "agentic-chat-approval-summary",
+        text: t("approval.description", { description }),
+      });
+    }
+    const bodyEl = container.createDiv({ cls: "agentic-chat-approval-skill-body" });
+    bodyEl.createEl("pre", { cls: "agentic-chat-approval-args", text: body || t("approval.emptyBody") });
+  }
+
+  private async renderPreview(container: HTMLElement): Promise<void> {
+    const rawPath = (this.request.args as { path?: unknown })?.path;
+    const path = typeof rawPath === "string" ? rawPath : "";
+    let current: string | null = null;
+    // Only preview types that need a body pay the cachedRead cost; rename and
+    // structured property updates can render from arguments alone.
+    const needsContent = approvalPreviewNeedsContent(this.request.toolName);
+    if (path && needsContent) {
+      const file = this.app.vault.getAbstractFileByPath(normalizeVaultPath(path));
+      if (file instanceof TFile) {
+        try {
+          current = await this.app.vault.cachedRead(file);
+        } catch {
+          current = null;
+        }
+      }
+    }
+    // The modal may have been dismissed while we were reading the file.
+    if (this.decided) return;
+    const preview = buildEditPreview(this.request.toolName, this.request.args, current);
+    if (preview.kind === "none") return; // keep the raw-args fallback already shown
+    container.empty();
+    this.renderPreviewBody(container, preview);
+  }
+
+  private renderPreviewBody(container: HTMLElement, preview: EditPreview): void {
+    if (preview.kind === "rename") {
+      container.createEl("p", {
+        cls: "agentic-chat-approval-summary",
+        text: t("approval.rename", { from: preview.from, to: preview.to }),
+      });
+      return;
+    }
+    if (preview.kind === "delete") {
+      container.createEl("p", { cls: "agentic-chat-approval-summary", text: t("approval.trash", { path: preview.path }) });
+      this.renderDiff(container, preview.content, "");
+      return;
+    }
+    if (preview.kind !== "diff") return;
+    container.createEl("p", {
+      cls: "agentic-chat-approval-summary",
+      text: t(preview.isNew ? "approval.create" : "approval.edit", { path: preview.path }),
+    });
+    this.renderDiff(container, preview.before, preview.after, preview.edits);
+  }
+
+  /** Render a line-level diff, or a compact summary when the change is too large. */
+  private renderDiff(container: HTMLElement, before: string, after: string, edits?: EditPreviewEdit[]): void {
+    if (edits?.length && this.renderExactEditDiff(container, before, edits)) return;
+    if (diffTooLarge(before, after)) {
+      const beforeLines = before ? before.split("\n").length : 0;
+      const afterLines = after ? after.split("\n").length : 0;
+      container.createEl("p", {
+        cls: "agentic-chat-approval-summary",
+        text: t("approval.changeLarge", { before: beforeLines, after: afterLines }),
+      });
+      return;
+    }
+    const lines = diffLines(before, after);
+    const stat = diffStat(lines);
+    container.createEl("p", {
+      cls: "agentic-chat-approval-summary",
+      text: `+${stat.added} −${stat.removed}`,
+    });
+    const diffEl = container.createDiv({ cls: "agentic-chat-diff-window" });
+    let contextBefore = DEFAULT_DIFF_CONTEXT_LINES;
+    let contextAfter = DEFAULT_DIFF_CONTEXT_LINES;
+    const renderWindow = () => {
+      const windowed = compactDiffLines(lines, {
+        contextBefore,
+        contextAfter,
+        maxLines: MAX_DIFF_DISPLAY_LINES,
+      });
+      diffEl.empty();
+      const pre = diffEl.createEl("pre", { cls: "agentic-chat-diff" });
+      this.renderDiffWindow(pre, windowed, {
+        expandAbove: () => {
+          contextBefore += DEFAULT_DIFF_CONTEXT_LINES;
+          renderWindow();
+        },
+        expandBelow: () => {
+          contextAfter += DEFAULT_DIFF_CONTEXT_LINES;
+          renderWindow();
+        },
+      });
+    };
+    renderWindow();
+  }
+
+  private renderExactEditDiff(container: HTMLElement, before: string, edits: EditPreviewEdit[]): boolean {
+    let contextBefore = DEFAULT_DIFF_CONTEXT_LINES;
+    let contextAfter = DEFAULT_DIFF_CONTEXT_LINES;
+    const initial = buildExactEditPreviewWindow(before, edits, { contextBefore, contextAfter });
+    if (!initial) return false;
+    let lines = diffLines(initial.before, initial.after);
+    let stat = diffStat(lines);
+    const summary = container.createEl("p", {
+      cls: "agentic-chat-approval-summary",
+      text: `+${stat.added} −${stat.removed}`,
+    });
+    const diffEl = container.createDiv({ cls: "agentic-chat-diff-window" });
+    const renderWindow = () => {
+      const windowed = buildExactEditPreviewWindow(before, edits, { contextBefore, contextAfter });
+      if (!windowed) return;
+      lines = diffLines(windowed.before, windowed.after);
+      stat = diffStat(lines);
+      summary.setText(`+${stat.added} −${stat.removed}`);
+      diffEl.empty();
+      const pre = diffEl.createEl("pre", { cls: "agentic-chat-diff" });
+      if (windowed.hiddenBefore > 0) {
+        this.renderDiffExpandButton(pre, "above", windowed.hiddenBefore, () => {
+          contextBefore += DEFAULT_DIFF_CONTEXT_LINES;
+          renderWindow();
+        });
+      }
+      for (const line of lines) {
+        const prefix = diffPrefix(line.op);
+        pre.createDiv({ cls: `agentic-chat-diff-line is-${line.op}`, text: `${prefix} ${line.text}` });
+      }
+      if (windowed.hiddenAfter > 0) {
+        this.renderDiffExpandButton(pre, "below", windowed.hiddenAfter, () => {
+          contextAfter += DEFAULT_DIFF_CONTEXT_LINES;
+          renderWindow();
+        });
+      }
+    };
+    renderWindow();
+    return true;
+  }
+
+  private renderDiffWindow(
+    container: HTMLElement,
+    windowed: CompactDiffWindow,
+    callbacks: { expandAbove: () => void; expandBelow: () => void },
+  ): void {
+    if (windowed.hiddenBefore > 0) {
+      this.renderDiffExpandButton(container, "above", windowed.hiddenBefore, callbacks.expandAbove);
+    }
+    for (const line of windowed.lines) {
+      const prefix = diffPrefix(line.op);
+      container.createDiv({ cls: `agentic-chat-diff-line is-${line.op}`, text: `${prefix} ${line.text}` });
+    }
+    if (windowed.hiddenAfter > 0) {
+      this.renderDiffExpandButton(container, "below", windowed.hiddenAfter, callbacks.expandBelow);
+    }
+  }
+
+  private renderDiffExpandButton(
+    container: HTMLElement,
+    direction: "above" | "below",
+    hiddenLines: number,
+    onClick: () => void,
+  ): void {
+    const count = Math.min(DEFAULT_DIFF_CONTEXT_LINES, hiddenLines);
+    const directionLabel = t(direction === "above" ? "approval.directionUp" : "approval.directionDown");
+    const button = container.createEl("button", {
+      cls: "agentic-chat-diff-expand",
+      text: t(count === 1 ? "approval.showMoreLine" : "approval.showMoreLines", {
+        count,
+        direction: directionLabel,
+      }),
+    });
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      onClick();
+    });
+  }
+
+  private decide(choice: UserApprovalChoice): void {
+    this.settle(choice);
+  }
+}
+
+type EditPreviewEdit = NonNullable<Extract<EditPreview, { kind: "diff" }>["edits"]>[number];
+
+function isInteractiveElement(element: Element | null): boolean {
+  return (
+    element instanceof HTMLButtonElement ||
+    element instanceof HTMLInputElement ||
+    element instanceof HTMLTextAreaElement ||
+    element instanceof HTMLSelectElement ||
+    element?.getAttribute("role") === "button" ||
+    element?.getAttribute("role") === "checkbox" ||
+    element?.getAttribute("contenteditable") === "true"
+  );
+}
+
+function previewArgs(args: unknown): string {
+  let text: string;
+  try {
+    text = JSON.stringify(args, null, 2);
+  } catch {
+    text = String(args);
+  }
+  text ??= "(no arguments)";
+  return text.length > 2_000 ? `${text.slice(0, 2_000)}\n…` : text;
+}
+
+function diffPrefix(op: string): string {
+  if (op === "add") return "+";
+  if (op === "remove") return "-";
+  return " ";
+}

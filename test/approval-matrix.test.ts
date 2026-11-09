@@ -1,0 +1,319 @@
+import { describe, expect, it } from "vitest";
+import type { App } from "obsidian";
+import type { StreamFn } from "@earendil-works/pi-agent-core";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Model } from "@earendil-works/pi-ai";
+import { AgentService } from "../src/agent/agent-service";
+import type { UserApprovalChoice } from "../src/agent/tool-call-controller";
+import { type ApprovalPolicy, type ApprovalSettings } from "../src/agent/approval";
+import { type AgentMode, resolveModePolicy } from "../src/agent/modes";
+import { resolveWorkingDirPolicy } from "../src/agent/working-dir";
+import { ObsidianSessionManager } from "../src/session/session-manager";
+import { DEFAULT_SETTINGS, type AgenticChatSettings } from "../src/settings";
+import { MemoryAdapter } from "./helpers/memory-adapter";
+
+/**
+ * First-principles tests for the approval/working-dir matrix — the composition
+ * resolveModePolicy × resolveWorkingDirPolicy × perTool overrides × MUTATING_TOOLS.
+ *
+ * The contract (AGENTS.md "Approval gate — non-obvious contract"):
+ *   precedence  : plan > slider (yolo) > per-tool override > settings default
+ *   composition : the working-dir boundary refines the mode policy **only in Safe
+ *                 mode**; YOLO (session-wide allow) and plan (read-only) skip the
+ *                 boundary by design. A deny always survives; a granted-dir target
+ *                 auto-runs; anything else (even a read, even a pathless call) is
+ *                 forced to ask.
+ *
+ * `composePolicy` below encodes exactly that documented composition; the matrix
+ * asserts every interaction cell, and two end-to-end AgentService runs cross-check
+ * that `composePolicy` matches the real `gateToolCall` for the subtle cells.
+ */
+
+/** Documented gate composition (see file header). Asserted, not assumed. */
+function composePolicy(
+  mode: AgentMode,
+  approval: ApprovalSettings,
+  toolName: string,
+  args: unknown,
+): ApprovalPolicy {
+  const base = resolveModePolicy(mode, approval, toolName).policy;
+  return mode === "safe" ? resolveWorkingDirPolicy(approval.workingDirs, args, base) : base;
+}
+
+type Cell = {
+  name: string;
+  mode: AgentMode;
+  mutating: ApprovalPolicy;
+  perTool?: Record<string, ApprovalPolicy>;
+  dirs?: string[];
+  tool: string;
+  args: unknown;
+  expected: ApprovalPolicy;
+};
+
+const READ = "read";
+const VAULT_INSPECT = "vault_inspect";
+const WRITE = "write";
+const IN_SCOPE = { path: "Notes/a.md" };
+const OUT_SCOPE = { path: "Other/a.md" };
+const PATHLESS = { pattern: "secret" };
+
+const CELLS: Cell[] = [
+  // --- Safe mode: the working-dir boundary is active. ---
+  { name: "safe read, no working set → allow", mode: "safe", mutating: "ask", tool: READ, args: IN_SCOPE, expected: "allow" },
+  { name: "safe read in-scope → allow", mode: "safe", mutating: "ask", dirs: ["Notes"], tool: READ, args: IN_SCOPE, expected: "allow" },
+  { name: "safe read out-of-scope → ask (even reads)", mode: "safe", mutating: "ask", dirs: ["Notes"], tool: READ, args: OUT_SCOPE, expected: "ask" },
+  { name: "safe vault_inspect in-scope path → allow", mode: "safe", mutating: "ask", dirs: ["Notes"], tool: VAULT_INSPECT, args: { action: "search", path: "Notes", query: "x" }, expected: "allow" },
+  { name: "safe vault_inspect pathless search → ask", mode: "safe", mutating: "ask", dirs: ["Notes"], tool: VAULT_INSPECT, args: { action: "search", query: "x" }, expected: "ask" },
+  { name: "safe vault_inspect out-of-scope path → ask", mode: "safe", mutating: "ask", dirs: ["Notes"], tool: VAULT_INSPECT, args: { action: "properties", path: "Other/a.md" }, expected: "ask" },
+  { name: "safe pathless call under a working set → ask", mode: "safe", mutating: "ask", dirs: ["Notes"], tool: "find", args: PATHLESS, expected: "ask" },
+  { name: "safe mutating, no working set → mutating policy", mode: "safe", mutating: "ask", tool: WRITE, args: IN_SCOPE, expected: "ask" },
+  { name: "safe mutating in-scope → allow", mode: "safe", mutating: "allow", dirs: ["Notes"], tool: WRITE, args: IN_SCOPE, expected: "allow" },
+  { name: "safe mutating out-of-scope → ask (boundary beats mutating allow)", mode: "safe", mutating: "allow", dirs: ["Notes"], tool: WRITE, args: OUT_SCOPE, expected: "ask" },
+  { name: "safe mutating deny survives in-scope", mode: "safe", mutating: "deny", dirs: ["Notes"], tool: WRITE, args: IN_SCOPE, expected: "deny" },
+  { name: "safe perTool allow does NOT bypass out-of-scope boundary", mode: "safe", mutating: "ask", perTool: { write: "allow" }, dirs: ["Notes"], tool: WRITE, args: OUT_SCOPE, expected: "ask" },
+  { name: "safe perTool deny survives in-scope", mode: "safe", mutating: "allow", perTool: { write: "deny" }, dirs: ["Notes"], tool: WRITE, args: IN_SCOPE, expected: "deny" },
+  { name: "safe perTool allow, no working set → allow", mode: "safe", mutating: "ask", perTool: { write: "allow" }, tool: WRITE, args: OUT_SCOPE, expected: "allow" },
+
+  // --- YOLO mode: session-wide allow; the boundary is skipped entirely. ---
+  { name: "yolo mutating denied in settings → allow", mode: "yolo", mutating: "deny", tool: WRITE, args: IN_SCOPE, expected: "allow" },
+  { name: "yolo out-of-scope mutating → allow (boundary skipped)", mode: "yolo", mutating: "deny", dirs: ["Notes"], tool: WRITE, args: OUT_SCOPE, expected: "allow" },
+  { name: "yolo perTool deny still wins", mode: "yolo", mutating: "allow", perTool: { write: "deny" }, tool: WRITE, args: IN_SCOPE, expected: "deny" },
+  { name: "yolo perTool deny wins even under a working set", mode: "yolo", mutating: "allow", perTool: { write: "deny" }, dirs: ["Notes"], tool: WRITE, args: IN_SCOPE, expected: "deny" },
+  { name: "yolo out-of-scope read → allow (boundary skipped)", mode: "yolo", mutating: "ask", dirs: ["Notes"], tool: READ, args: OUT_SCOPE, expected: "allow" },
+
+  // --- Plan mode: read-only; the boundary is skipped (plan already denies writes). ---
+  { name: "plan mutating → deny", mode: "plan", mutating: "allow", tool: WRITE, args: IN_SCOPE, expected: "deny" },
+  { name: "plan mutating in-scope → deny (boundary skipped, plan wins)", mode: "plan", mutating: "allow", dirs: ["Notes"], tool: WRITE, args: IN_SCOPE, expected: "deny" },
+  { name: "plan beats a perTool allow", mode: "plan", mutating: "allow", perTool: { write: "allow" }, dirs: ["Notes"], tool: WRITE, args: IN_SCOPE, expected: "deny" },
+  { name: "plan out-of-scope read → allow (read-only; boundary skipped)", mode: "plan", mutating: "ask", dirs: ["Notes"], tool: READ, args: OUT_SCOPE, expected: "allow" },
+];
+
+describe("approval × working-dir matrix", () => {
+  for (const cell of CELLS) {
+    it(cell.name, () => {
+      const approval: ApprovalSettings = {
+        mutating: cell.mutating,
+        perTool: cell.perTool ?? {},
+        workingDirs: cell.dirs ?? [],
+      };
+      expect(composePolicy(cell.mode, approval, cell.tool, cell.args)).toBe(cell.expected);
+    });
+  }
+});
+
+/** Scripts one assistant message per agent turn. */
+function scriptedStreamFn(
+  turns: Array<{ content: AssistantMessage["content"]; stopReason: "stop" | "toolUse" }>,
+): StreamFn {
+  let turn = 0;
+  return ((model: Model<"openai-completions">) => {
+    const stream = createAssistantMessageEventStream();
+    const spec = turns[Math.min(turn, turns.length - 1)];
+    turn += 1;
+    const message = {
+      role: "assistant" as const,
+      content: spec.content,
+      api: model.api,
+      provider: model.provider,
+      model: model.id,
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+      stopReason: spec.stopReason,
+      timestamp: Date.now(),
+    };
+    queueMicrotask(() => {
+      stream.push({ type: "start", partial: { ...message, content: [] } });
+      stream.push({ type: "done", reason: spec.stopReason, message });
+      stream.end(message);
+    });
+    return stream;
+  }) as unknown as StreamFn;
+}
+
+function makeService(
+  streamFn: StreamFn,
+  settings: Partial<AgenticChatSettings>,
+  confirmToolCall: () => Promise<UserApprovalChoice> = async () => ({ approved: true, remember: false }),
+): { service: AgentService; confirmCalls: { count: number } } {
+  const merged: AgenticChatSettings = {
+    ...DEFAULT_SETTINGS,
+    openrouterApiKey: "test-key",
+    ...settings,
+    approval: { ...DEFAULT_SETTINGS.approval, ...(settings.approval ?? {}) },
+  };
+  const confirmCalls = { count: 0 };
+  const adapter = new MemoryAdapter();
+  const sessionManager = new ObsidianSessionManager(adapter.asDataAdapter(), "sessions", "vault:test");
+  const service = new AgentService({
+    app: { vault: { on: () => ({}), offref: () => {} }, workspace: {} } as unknown as App,
+    getSettings: () => merged,
+    sessionManager,
+    streamFn,
+    confirmToolCall: async () => {
+      confirmCalls.count += 1;
+      return confirmToolCall();
+    },
+  });
+  return { service, confirmCalls };
+}
+
+describe("approval matrix: end-to-end cross-checks through gateToolCall", () => {
+  it("safe + perTool allow on write + out-of-scope target still prompts (boundary beats perTool allow)", async () => {
+    const streamFn = scriptedStreamFn([
+      { content: [{ type: "toolCall", id: "c1", name: "write", arguments: { path: "Other/x.md", content: "hi" } }], stopReason: "toolUse" },
+      { content: [{ type: "text", text: "ok" }], stopReason: "stop" },
+    ]);
+    const { service, confirmCalls } = makeService(streamFn, {
+      mode: "safe",
+      approval: { mutating: "ask", perTool: { write: "allow" }, workingDirs: ["Notes"] },
+      // confirm() returns false, yet the call was gated to ask because of the boundary.
+    }, async () => ({ approved: false, remember: false }));
+    await service.sendPrompt("write outside");
+    expect(confirmCalls.count).toBe(1);
+  });
+
+  it("yolo + working set + out-of-scope mutating call auto-runs (boundary skipped entirely)", async () => {
+    const streamFn = scriptedStreamFn([
+      { content: [{ type: "toolCall", id: "c1", name: "write", arguments: { path: "Other/x.md", content: "hi" } }], stopReason: "toolUse" },
+      { content: [{ type: "text", text: "done" }], stopReason: "stop" },
+    ]);
+    const { service, confirmCalls } = makeService(streamFn, {
+      mode: "yolo",
+      approval: { mutating: "deny", perTool: {}, workingDirs: ["Notes"] },
+    });
+    await service.sendPrompt("write outside in yolo");
+    // yolo skips the boundary and forces allow, so the user is never prompted.
+    expect(confirmCalls.count).toBe(0);
+    // The tool ran (against the empty mock vault it errors, but it was not gated).
+    const ran = service.getMessages().some((m) => m.role === "toolResult");
+    expect(ran).toBe(true);
+  });
+});
+
+describe("subagent dispatch matrix (gateSubagentDispatch × dispatchCanMutate × mode × working set)", () => {
+  // Single built-in Explorer role (read-only recon).
+  const dispatch = (agent: string) => ({
+    content: [{ type: "toolCall", id: "c1", name: "subagent", arguments: { agent, task: "do it" } } as AssistantMessage["content"][number]],
+    stopReason: "toolUse" as const,
+  });
+  const childReply = (text: string) => ({ content: [{ type: "text" as const, text }], stopReason: "stop" as const });
+  const parentFollowup = (text: string) => ({ content: [{ type: "text" as const, text }], stopReason: "stop" as const });
+
+  function toolResult(service: AgentService): { isError: boolean; text: string } | undefined {
+    const tr = service.getMessages().find((m) => m.role === "toolResult") as
+      | { isError: boolean; content: unknown }
+      | undefined;
+    if (!tr) return undefined;
+    // Content may be a string or a block array; handle both so a string-content
+    // result doesn't throw on `.map`.
+    const content = tr.content;
+    const text = typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content
+            .map((b) => (typeof b === "object" && b !== null ? (b as { text?: string }).text ?? "" : ""))
+            .join("")
+        : "";
+    return { isError: tr.isError, text };
+  }
+
+  it("safe + no working set: a read-only explorer dispatch does not prompt (S8: explorer read-only, inherits parent)", async () => {
+    const streamFn = scriptedStreamFn([dispatch("explorer"), childReply("explorer reply"), parentFollowup("all set")]);
+    const { service, confirmCalls } = makeService(streamFn, {
+      mode: "safe",
+      approval: { mutating: "ask", perTool: {}, workingDirs: [] },
+    }, async () => ({ approved: true, remember: false }));
+    await service.sendPrompt("edit with a subagent");
+    expect(confirmCalls.count).toBe(0);
+    expect(toolResult(service)?.isError).toBe(false);
+    expect(toolResult(service)?.text).toContain("explorer reply");
+  });
+
+  it("safe + no working set: a read-only fan-out runs with no prompt", async () => {
+    const streamFn = scriptedStreamFn([dispatch("explorer"), childReply("found 3 notes"), parentFollowup("done")]);
+    const { service, confirmCalls } = makeService(streamFn, {
+      mode: "safe",
+      approval: { mutating: "ask", perTool: {}, workingDirs: [] },
+    });
+    await service.sendPrompt("research with a subagent");
+    expect(confirmCalls.count).toBe(0);
+    expect(toolResult(service)?.isError).toBe(false);
+    expect(toolResult(service)?.text).toContain("found 3 notes");
+  });
+
+  it("yolo auto-approves a read-only explorer dispatch (S8: explorer has no mutating tools, gate is vacuous by design)", async () => {
+    const streamFn = scriptedStreamFn([dispatch("explorer"), childReply("explorer reply"), parentFollowup("done")]);
+    const { service, confirmCalls } = makeService(streamFn, {
+      mode: "yolo",
+      approval: { mutating: "deny", perTool: {}, workingDirs: [] },
+    });
+    await service.sendPrompt("edit with a subagent in yolo");
+    expect(confirmCalls.count).toBe(0);
+    expect(toolResult(service)?.isError).toBe(false);
+    expect(toolResult(service)?.text).toContain("explorer reply");
+  });
+
+  it("safe + mutating denied: a read-only dispatch is not blocked (S8: explorer has no mutating tools)", async () => {
+    const streamFn = scriptedStreamFn([dispatch("explorer"), childReply("explorer reply"), parentFollowup("all set")]);
+    const { service, confirmCalls } = makeService(streamFn, {
+      mode: "safe",
+      approval: { mutating: "deny", perTool: {}, workingDirs: [] },
+    });
+    await service.sendPrompt("edit with a subagent");
+    expect(confirmCalls.count).toBe(0);
+    expect(toolResult(service)?.isError).toBe(false);
+    expect(toolResult(service)?.text).toContain("explorer reply");
+  });
+
+  it("plan: any subagent dispatch is blocked because plan mode is read-only", async () => {
+    const streamFn = scriptedStreamFn([dispatch("explorer"), childReply("explorer read-only reply"), parentFollowup("done")]);
+    const { service, confirmCalls } = makeService(streamFn, {
+      mode: "plan",
+      approval: { mutating: "allow", perTool: {}, workingDirs: [] },
+    });
+    await service.sendPrompt("edit with a subagent in plan");
+    expect(confirmCalls.count).toBe(0);
+    expect(toolResult(service)?.isError).toBe(true);
+    expect(toolResult(service)?.text).toMatch(/read-only/i);
+  });
+
+  it("safe + working set: a read-only dispatch runs without an up-front prompt", async () => {
+    const streamFn = scriptedStreamFn([dispatch("explorer"), childReply("found scoped notes"), parentFollowup("done")]);
+    const { service, confirmCalls } = makeService(streamFn, {
+      mode: "safe",
+      approval: { mutating: "ask", perTool: {}, workingDirs: ["Notes"] },
+    }, async () => ({ approved: false, remember: false }));
+    await service.sendPrompt("research with a subagent under a working set");
+    expect(confirmCalls.count).toBe(0);
+    expect(toolResult(service)?.isError).toBe(false);
+    expect(toolResult(service)?.text).toContain("found scoped notes");
+  });
+
+  it("safe + working set: an explorer child read outside the working set is gated at the child call", async () => {
+    const streamFn = scriptedStreamFn([
+      dispatch("explorer"),
+      {
+        content: [
+          {
+            type: "toolCall",
+            id: "child-read",
+            name: "read",
+            arguments: { path: "Other/x.md" },
+          } as AssistantMessage["content"][number],
+        ],
+        stopReason: "toolUse" as const,
+      },
+      childReply("child saw the denial"),
+      parentFollowup("done"),
+    ]);
+    const { service, confirmCalls } = makeService(streamFn, {
+      mode: "safe",
+      approval: { mutating: "allow", perTool: {}, workingDirs: ["Notes"] },
+    }, async () => ({ approved: false, remember: false }));
+
+    await service.sendPrompt("edit outside with a subagent under a working set");
+
+    expect(confirmCalls.count).toBe(1);
+    expect(toolResult(service)?.text).toContain("child saw the denial");
+  });
+});
