@@ -48,29 +48,31 @@ await $(".agentic-chat-send").click();
 
 | entry point | source | proof | status |
 |---|---|---|---|
-| Ribbon icon | `src/main.ts:93` | no committed check | `NONE` |
-| Command palette: Open chat | `src/main.ts:95` | `test/e2e/specs/smoke.e2e.ts:45` | `covered` |
-| Command palette: New conversation | `src/main.ts:117` | `test/session-actions.test.ts:153` (unit only) | `partial` |
-| Command palette: Quick Ask inline edit | `src/main.ts:114` | `test/e2e/specs/smoke.e2e.ts:237` | `covered` |
-| Editor selection context menu | `src/main.ts:164` | no committed check | `NONE` |
-| File context menu | `src/main.ts:178` | no committed check | `NONE` |
-| Files context menu (multi-select) | `src/main.ts:174` | no committed check | `NONE` |
-| Composer card mounts | `src/ui/chat-view.ts:659` | `test/e2e/specs/smoke.e2e.ts:45` | `covered` |
-| Empty-state suggestion chips | `src/ui/chat-view.ts:909` | no committed check | `NONE` |
-| Enter sends | `src/ui/chat-view.ts:713` | `test/e2e/specs/smoke.e2e.ts:45` (send button path only) | `partial` |
-| Shift+Enter inserts a newline | `src/ui/chat-view.ts:713` | no committed check | `NONE` |
-| Send button | `src/ui/chat-view.ts:835` | `test/e2e/specs/approval-deterministic.e2e.ts:311` | `covered` |
-| ArrowUp/ArrowDown recall | `src/ui/chat-view.ts:729` | `test/composer-history.test.ts:16` (unit only) | `partial` |
-| Escape cancels edit | `src/ui/chat-view.ts:700` | `test/prompt-edit-state.test.ts:5` (unit only) | `partial` |
-| Autocomplete menu opens | `src/ui/chat-view.ts:962` | `test/e2e/specs/autocomplete-dropup.e2e.ts:34` | `covered` |
+| Ribbon icon | `src/main.ts:116` | no committed check | `NONE` |
+| Command palette: Open chat | `src/main.ts:119` | `test/e2e/specs/smoke.e2e.ts:45` | `covered` |
+| Command palette: New conversation | `src/main.ts:125` | `test/session-actions.test.ts:153` (unit only) | `partial` |
+| Command palette: Quick Ask inline edit | `src/main.ts:131` | `test/e2e/specs/smoke.e2e.ts:237` | `covered` |
+| Mobile startup and root chat tab | `src/main.ts:108` | `test/e2e/specs/mobile-viewport.e2e.ts:396` | `covered` |
+| Editor selection context menu | `src/main.ts:203` | no committed check | `NONE` |
+| File context menu | `src/main.ts:219` | no committed check | `NONE` |
+| Files context menu (multi-select) | `src/main.ts:219` | no committed check | `NONE` |
+| Composer card mounts | `src/ui/chat-view.ts:668` | `test/e2e/specs/smoke.e2e.ts:45` | `covered` |
+| Empty-state suggestion chips | `src/ui/chat-view.ts:926` | no committed check | `NONE` |
+| Enter sends | `src/ui/chat-view.ts:724` | `test/e2e/specs/smoke.e2e.ts:45` (send button path only) | `partial` |
+| Shift+Enter inserts a newline | `src/ui/chat-view.ts:724` | no committed check | `NONE` |
+| Send button | `src/ui/chat-view.ts:855` | `test/e2e/specs/approval-deterministic.e2e.ts:311` | `covered` |
+| Mobile composer growth | `src/ui/chat-view.ts:1498` | `test/e2e/specs/mobile-viewport.e2e.ts:425` | `covered` |
+| ArrowUp/ArrowDown recall | `src/ui/chat-view.ts:731` | `test/composer-history.test.ts:16` (unit only) | `partial` |
+| Escape cancels edit | `src/ui/chat-view.ts:726` | `test/prompt-edit-state.test.ts:5` (unit only) | `partial` |
+| Autocomplete menu opens | `src/ui/chat-view.ts:965` | `test/e2e/specs/autocomplete-dropup.e2e.ts:34` | `covered` |
 | Autocomplete keys | `src/ui/autocomplete-menu.ts:108` | no committed check | `NONE` |
 | `@` mention autocomplete | `src/ui/autocomplete.ts:80` | `test/autocomplete.test.ts:51` (detection only) | `partial` |
-| Drag-and-drop attach | `src/ui/chat-view.ts:847` | `test/drag-drop.test.ts:4` (parser only) | `partial` |
-| Active note auto-chip | `src/ui/chat-view.ts:2427` | `test/e2e/specs/smoke.e2e.ts:98` | `covered` |
+| Drag-and-drop attach | `src/ui/chat-view.ts:862` | `test/drag-drop.test.ts:4` (parser only) | `partial` |
+| Active note auto-chip | `src/ui/chat-view.ts:2591` | `test/e2e/specs/smoke.e2e.ts:98` | `covered` |
 | Ignored active note stays out | `src/ui/active-note.ts:54` | `test/e2e/specs/runtime-behavior.e2e.ts:194` | `covered` |
-| Remove an attachment chip | `src/ui/chat-view.ts:2475` | `test/context-chip-renderer.test.ts:121` (unit only) | `partial` |
-| Image attachment guard | `src/ui/chat-view.ts:2402` | `test/image-attachments.test.ts:4` (encoding only) | `partial` |
-| Folder attachment menu | `src/ui/chat-view.ts:2519` | only `showFolderMenu()` calls it, and no production code calls that method | `unreachable` |
+| Remove an attachment chip | `src/ui/chat-view.ts:2624` | `test/context-chip-renderer.test.ts:121` (unit only) | `partial` |
+| Image attachment guard | `src/ui/chat-view.ts:2566` | `test/image-attachments.test.ts:4` (encoding only) | `partial` |
+| Folder attachment menu | `src/ui/chat-view.ts:2689` | only `showFolderMenu()` calls it, and no production code calls that method | `unreachable` |
 | Quick Ask accept | `src/ui/quick-ask-modal.ts:53` | `test/e2e/specs/smoke.e2e.ts:237` | `covered` |
 | Quick Ask Enter accept | `src/ui/quick-ask-modal.ts:58` | no committed check | `NONE` |
 

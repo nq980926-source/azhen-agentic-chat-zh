@@ -51,11 +51,11 @@ await browser.waitUntil(async () =>
 
 | entry point | source | proof | status |
 |---|---|---|---|
-| Send a prompt and render a reply | `src/ui/chat-view.ts:1533` | `test/e2e/specs/approval-deterministic.e2e.ts:311` | `covered` |
-| Stream text deltas | `src/ui/chat-view.ts:2708` | `test/e2e/specs/beautifului-polish.e2e.ts:148` (synthetic stream) | `partial` |
-| Reasoning section | `src/ui/chat-view.ts:2712` | `test/e2e/specs/beautifului-polish.e2e.ts:148` | `partial` |
-| Markdown rendering | `src/ui/chat-view.ts:2723` | `test/assistant-bubble-rendering.test.ts:218` (unit only) | `partial` |
-| Tool step cards and diffs | `src/ui/chat-view.ts:2681` | `test/e2e/specs/approval-deterministic.e2e.ts:329` | `covered` |
+| Send a prompt and render a reply | `src/ui/chat-view.ts:1326` | `test/e2e/specs/approval-deterministic.e2e.ts:311` | `covered` |
+| Stream text deltas | `src/ui/chat-view.ts:2823` | `test/e2e/specs/beautifului-polish.e2e.ts:148` (synthetic stream) | `partial` |
+| Reasoning section | `src/ui/chat-view.ts:2754` | `test/e2e/specs/beautifului-polish.e2e.ts:148` | `partial` |
+| Markdown rendering | `src/ui/chat-view.ts:2743` | `test/assistant-bubble-rendering.test.ts:218` (unit only) | `partial` |
+| Tool step cards and diffs | `src/ui/chat-view.ts:2755` | `test/e2e/specs/approval-deterministic.e2e.ts:329` | `covered` |
 | Tool-step vault path link | `src/ui/assistant-bubble.ts:397` | no committed check | `NONE` |
 | Stop the active turn (toolbar) | `src/ui/chat-view.ts:827` | `test/e2e/specs/skill-chip.e2e.ts:48` (click only) | `partial` |
 | Stop clears queued steering and follow-ups | `src/agent/agent-service.ts:711` | `test/agent-service.test.ts:1671` | `partial` |
@@ -76,7 +76,7 @@ await browser.waitUntil(async () =>
 | Edit and resend a user turn | `src/ui/chat-view.ts:2635` | `test/prompt-edit-state.test.ts:5` (state only) | `partial` |
 | Context-window bar | `src/ui/chat-view.ts:799` | `test/e2e/specs/smoke.e2e.ts:179` (existence only) | `partial` |
 | Usage readout | `src/ui/chat-view.ts:2216` | no committed check | `NONE` |
-| Background-tab completion notice | `src/ui/chat-view.ts:1254` | no committed check | `NONE` |
+| Background-tab completion notice | `src/ui/chat-view.ts:1256` | no committed check | `NONE` |
 
 ## Gotchas
 

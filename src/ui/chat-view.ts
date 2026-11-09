@@ -1,6 +1,7 @@
 import {
   ItemView,
   Notice,
+  Platform,
   TFile,
   TFolder,
   type WorkspaceLeaf,
@@ -712,8 +713,9 @@ export class ChatView extends ItemView {
     const inputWrap = field.createDiv({ cls: "agentic-chat-input-wrap" });
     this.inputEl = inputWrap.createEl("textarea", {
       cls: "agentic-chat-input",
-      attr: { rows: "3", placeholder: t("chat.input.placeholder") },
+      attr: { rows: Platform.isMobile ? "1" : "3", placeholder: t("chat.input.placeholder") },
     });
+    window.requestAnimationFrame(() => this.resizeInput());
     this.menu = new AutocompleteMenu(
       composer,
       (item) => this.chooseAutocomplete(item),
@@ -742,6 +744,7 @@ export class ChatView extends ItemView {
     // Real user typing both refreshes autocomplete and abandons history navigation.
     // Programmatic value changes (recall) set `.value` directly without an input event.
     this.inputEl.addEventListener("input", (event) => {
+      this.resizeInput();
       this.resetHistoryNav();
       // Composition (IME) inputs may briefly leave the value empty; don't drop a
       // queued prompt mid-composition — the trailing non-composing input event
@@ -1111,6 +1114,19 @@ export class ChatView extends ItemView {
     return this.isAnyTabStreaming();
   }
 
+  /** A mobile migration may close an idle single-tab leaf after copying its draft. */
+  canCloseForMobileMove(): boolean {
+    return !this.closed && this.tabs.length === 1 && !this.isAnyTabStreaming();
+  }
+
+  /** Preserve an unsent draft when moving a legacy sidebar view into a root tab. */
+  copyComposerDraftTo(target: ChatView): void {
+    if (!this.inputEl || !target.inputEl) return;
+    target.setComposerValueQuiet(this.inputEl.value);
+    target.resizeInput();
+    target.inputEl.focus();
+  }
+
   /** Whether any tab in this leaf is streaming — covers background tabs for the settings gate. */
   private isAnyTabStreaming(): boolean {
     for (const tab of this.tabs) {
@@ -1319,7 +1335,7 @@ export class ChatView extends ItemView {
     if (this.service.isStreaming()) {
       if (parseStreamingSteering(text)) {
         this.pushHistory(text);
-        this.inputEl.value = "";
+        this.clearComposer();
         await this.sendSteeringPrompt(text);
         return;
       }
@@ -1343,23 +1359,28 @@ export class ChatView extends ItemView {
 
     this.pushHistory(text);
     if (text.startsWith("#")) {
-      this.inputEl.value = "";
+      this.clearComposer();
       await this.captureInlineInstruction(text);
       return;
     }
     if (text.startsWith("/")) {
-      this.inputEl.value = "";
+      this.clearComposer();
       const handled = await this.handleSlashCommand(text);
       if (handled) {
         return;
       }
     }
-    this.inputEl.value = "";
+    this.clearComposer();
     if (editIndex !== null) {
       await this.editAndResend(editIndex, text);
       return;
     }
     await this.sendPrompt(text);
+  }
+
+  private clearComposer(): void {
+    this.inputEl.value = "";
+    this.resizeInput();
   }
 
   private queueComposerPrompt(): void {
@@ -1385,7 +1406,7 @@ export class ChatView extends ItemView {
     this.flushingQueuedPrompt = true;
     try {
       this.pushHistory(text);
-      this.inputEl.value = "";
+      this.clearComposer();
       await this.sendPrompt(text);
     } finally {
       this.flushingQueuedPrompt = false;
@@ -1470,6 +1491,18 @@ export class ChatView extends ItemView {
     this.inputEl.value = value;
     this.inputEl.setSelectionRange(value.length, value.length);
     this.menu.hide();
+    this.resizeInput();
+  }
+
+  /** Keep the mobile composer compact until the draft needs more space. */
+  private resizeInput(): void {
+    if (!Platform.isMobile || !this.inputEl) return;
+    this.inputEl.setCssProps({ "--agentic-chat-input-height": "auto" });
+    const maxHeight = Math.min(160, Math.floor(window.innerHeight * 0.28));
+    this.inputEl.setCssProps({
+      "--agentic-chat-input-height": `${Math.min(this.inputEl.scrollHeight, maxHeight)}px`,
+    });
+    this.inputEl.toggleClass("is-scrollable", this.inputEl.scrollHeight > maxHeight);
   }
 
   private clearEditingHighlight(): void {

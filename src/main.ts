@@ -1,6 +1,7 @@
 import {
   Plugin,
   Notice,
+  Platform,
   TFile,
   TFolder,
   WorkspaceLeaf,
@@ -100,6 +101,12 @@ export default class AgenticChatPlugin extends Plugin {
     })();
 
     this.registerView(VIEW_TYPE_AGENT_CHAT, (leaf) => new ChatView(leaf, this));
+    if (Platform.isMobile) {
+      // Layout restoration runs once, before the user starts navigating. Reuse a
+      // restored chat leaf or migrate it into a full-width root tab; do not
+      // continuously pull the user back after they switch to a note.
+      this.app.workspace.onLayoutReady(() => void this.activateView());
+    }
     this.registerObsidianProtocolHandler(MCP_OAUTH_OBSIDIAN_PROTOCOL_ACTION, (params) => {
       if (!this.mcpOAuthCallbacks.handleProtocolCallback(params)) {
         new Notice(t("main.notice.oauthNoFlow"));
@@ -248,7 +255,32 @@ export default class AgenticChatPlugin extends Plugin {
   async activateView(): Promise<void> {
     const { workspace } = this.app;
     const existing = workspace.getLeavesOfType(VIEW_TYPE_AGENT_CHAT);
-    let leaf: WorkspaceLeaf | null = existing[0] ?? null;
+    let leaf: WorkspaceLeaf | null;
+
+    if (Platform.isMobile) {
+      leaf = existing.find((candidate) => candidate.getRoot() === workspace.rootSplit) ?? null;
+      if (!leaf) {
+        const sidebarLeaf =
+          existing.find((candidate) => candidate.view instanceof ChatView && !candidate.view.canCloseForMobileMove()) ?? null;
+        if (sidebarLeaf) {
+          // Never detach a busy leaf or one with several in-memory tabs.
+          await workspace.revealLeaf(sidebarLeaf);
+          workspace.setActiveLeaf(sidebarLeaf, { focus: true });
+          return;
+        }
+
+        const previousLeaf = existing[0] ?? null;
+        leaf = workspace.getLeaf("tab");
+        await leaf.setViewState({ type: VIEW_TYPE_AGENT_CHAT, active: true });
+        if (previousLeaf?.view instanceof ChatView && leaf.view instanceof ChatView) {
+          previousLeaf.view.copyComposerDraftTo(leaf.view);
+          previousLeaf.detach();
+        }
+      }
+    } else {
+      leaf = existing[0] ?? null;
+    }
+
     if (!leaf) {
       leaf = workspace.getRightLeaf(false);
       if (!leaf) return;

@@ -60,6 +60,24 @@ async function openChat(): Promise<void> {
   await $(".agentic-chat-view").waitForExist();
 }
 
+async function assertChatUsesRootWorkspace(): Promise<void> {
+  const metrics = await browser.executeObsidian(({ app }, viewType) => {
+    const leaf = app.workspace.getLeavesOfType(viewType)[0];
+    if (!leaf) return null;
+    const view = document.querySelector<HTMLElement>(".agentic-chat-view");
+    const viewportWidth = window.innerWidth;
+    return {
+      inRoot: leaf.getRoot() === app.workspace.rootSplit,
+      leafWidth: Math.round(view?.getBoundingClientRect().width ?? 0),
+      viewportWidth,
+    };
+  }, VIEW_TYPE_AGENT_CHAT);
+
+  expect(metrics).not.toBeNull();
+  expect(metrics?.inRoot).toBe(true);
+  expect(metrics?.leafWidth).toBeGreaterThanOrEqual((metrics?.viewportWidth ?? 0) * 0.8);
+}
+
 async function sendPrompt(prompt: string): Promise<void> {
   const input = await $(".agentic-chat-input");
   await input.click();
@@ -383,7 +401,13 @@ describe("agentic-chat mobile viewport", function () {
       textTurn("mobile approval final", "Wrote the mobile approval note."),
       textTurn(
         "mobile long response",
-        `MobileWrap ${Array.from({ length: 30 }, (_, index) => `long-mobile-response-token-${index + 1}`).join("-")}`,
+        [
+          `MobileWrap ${Array.from({ length: 30 }, (_, index) => `long-mobile-response-token-${index + 1}`).join("-")}`,
+          "",
+          "| 项目 | 说明 | 状态 |",
+          "| --- | --- | --- |",
+          "| mobile-wide-table | 这是一段用于验证手机宽度下表格只在自身区域横向滚动的较长说明 | 通过 |",
+        ].join("\n"),
       ),
     ]);
     await openChat();
@@ -397,8 +421,34 @@ describe("agentic-chat mobile viewport", function () {
     await expect($(".agentic-chat-input")).toBeDisplayed();
     await expect($(".agentic-chat-send")).toBeDisplayed();
     await expect($(".agentic-chat-mode-toggle")).toBeDisplayed();
+    await assertChatUsesRootWorkspace();
     await assertFits(".agentic-chat-view", "chat view");
     await assertFits(".agentic-chat-field", "composer field");
+  });
+
+  it("starts with a compact composer and grows for a multi-line draft", async function () {
+    const compact = await browser.execute(() => {
+      const input = document.querySelector<HTMLTextAreaElement>(".agentic-chat-input");
+      const field = document.querySelector<HTMLElement>(".agentic-chat-field");
+      return {
+        inputHeight: Math.round(input?.getBoundingClientRect().height ?? 0),
+        fieldHeight: Math.round(field?.getBoundingClientRect().height ?? 0),
+      };
+    });
+    expect(compact.inputHeight).toBeLessThanOrEqual(48);
+    expect(compact.fieldHeight).toBeLessThanOrEqual(112);
+
+    const input = await $(".agentic-chat-input");
+    await input.setValue("line one\nline two\nline three\nline four");
+    await browser.waitUntil(
+      async () =>
+        await browser.execute(() => {
+          const textarea = document.querySelector<HTMLTextAreaElement>(".agentic-chat-input");
+          return (textarea?.getBoundingClientRect().height ?? 0) > 48;
+        }),
+      { timeout: 2_000, timeoutMsg: "multi-line draft did not grow the composer" },
+    );
+    await input.setValue("");
   });
 
   it("keeps the settings tab UI usable at phone width", async function () {
@@ -461,6 +511,19 @@ describe("agentic-chat mobile viewport", function () {
       { timeout: 10_000, timeoutMsg: "mobile long response did not render" },
     );
     await assertFits(".agentic-chat-messages", "message list");
+    const tableMetrics = await browser.execute(() => {
+      const table = Array.from(document.querySelectorAll<HTMLTableElement>(".agentic-chat-text table"))
+        .find((candidate) => candidate.textContent?.includes("mobile-wide-table"));
+      const messages = document.querySelector<HTMLElement>(".agentic-chat-messages");
+      return {
+        found: Boolean(table),
+        tableOverflowsLocally: table ? table.scrollWidth > table.clientWidth : false,
+        messagesOverflow: messages ? messages.scrollWidth > messages.clientWidth + 2 : true,
+      };
+    });
+    expect(tableMetrics.found).toBe(true);
+    expect(tableMetrics.tableOverflowsLocally).toBe(true);
+    expect(tableMetrics.messagesOverflow).toBe(false);
     await browser.executeObsidian(async ({ app }, viewType) => {
       const view = app.workspace.getLeavesOfType(viewType)[0]?.view as unknown as {
         service?: { abort?: () => void };

@@ -57,8 +57,8 @@ await (await modal.$("button=Allow")).click();
 | Per-tool deny flips to allow in a recorded run | `src/settings.ts:784` | `test/e2e/probe/scenarios/settings-gate.e2e.ts:75` | `covered` |
 | Working dir auto-runs inside and asks outside | `src/agent/tool-call-controller.ts:266` | `test/e2e/specs/approval-deterministic.e2e.ts:395` | `covered` |
 | Working directories settings row | `src/settings.ts:795` | no committed check | `NONE` |
-| Safe/YOLO toggle | `src/ui/chat-view.ts:811` | no committed check | `NONE` |
-| `/config` mode picker | `src/ui/chat-view.ts:2178` | no committed check | `NONE` |
+| Safe/YOLO toggle | `src/ui/chat-view.ts:814` | no committed check | `NONE` |
+| `/config` mode picker | `src/ui/chat-view.ts:2310` | no committed check | `NONE` |
 | `/plan` enters sticky plan mode | `src/ui/chat-view.ts:1044` | `test/e2e/specs/runtime-behavior.e2e.ts:220` | `covered` |
 | Plan badge exits plan mode | `src/ui/chat-view.ts:812` | `test/e2e/specs/runtime-behavior.e2e.ts:220` | `covered` |
 | Invalid mode transition is blocked | `src/ui/chat-view.ts:1032` | `test/modes.test.ts:100` (unit only) | `partial` |
