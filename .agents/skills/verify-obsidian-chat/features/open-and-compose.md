@@ -10,6 +10,8 @@
 - Autocomplete trigger for slash commands, skills, and `@` mentions.
 - Attachments: active note, selected text, files, folders, images, and
   drag-and-drop.
+- Android IME viewport fitting, native-nav clearance, and bounded multiline
+  growth without a page-level scroll container.
 - Empty-state suggestion chips.
 - Quick Ask inline edit.
 
@@ -52,7 +54,7 @@ await $(".agentic-chat-send").click();
 | Command palette: Open chat | `src/main.ts:119` | `test/e2e/specs/smoke.e2e.ts:45` | `covered` |
 | Command palette: New conversation | `src/main.ts:125` | `test/session-actions.test.ts:153` (unit only) | `partial` |
 | Command palette: Quick Ask inline edit | `src/main.ts:131` | `test/e2e/specs/smoke.e2e.ts:237` | `covered` |
-| Mobile startup and root chat tab | `src/main.ts:108` | `test/e2e/specs/mobile-viewport.e2e.ts:396` | `covered` |
+| Mobile startup and root chat tab | `src/main.ts:108` | `test/e2e/specs/mobile-viewport.e2e.ts:465` | `covered` |
 | Editor selection context menu | `src/main.ts:203` | no committed check | `NONE` |
 | File context menu | `src/main.ts:219` | no committed check | `NONE` |
 | Files context menu (multi-select) | `src/main.ts:219` | no committed check | `NONE` |
@@ -61,7 +63,8 @@ await $(".agentic-chat-send").click();
 | Enter sends | `src/ui/chat-view.ts:724` | `test/e2e/specs/smoke.e2e.ts:45` (send button path only) | `partial` |
 | Shift+Enter inserts a newline | `src/ui/chat-view.ts:724` | no committed check | `NONE` |
 | Send button | `src/ui/chat-view.ts:855` | `test/e2e/specs/approval-deterministic.e2e.ts:311` | `covered` |
-| Mobile composer growth | `src/ui/chat-view.ts:1498` | `test/e2e/specs/mobile-viewport.e2e.ts:425` | `covered` |
+| Android keyboard viewport and compact composer | `src/ui/android-keyboard-layout.ts:12`; `src/ui/chat-view.ts:1529` | `test/e2e/specs/mobile-viewport.e2e.ts:502`; `test/android-keyboard-layout.test.ts:9` | `covered` |
+| Mobile composer growth and internal scroll | `src/ui/chat-view.ts:1509` | `test/e2e/specs/mobile-viewport.e2e.ts:514` | `covered` |
 | ArrowUp/ArrowDown recall | `src/ui/chat-view.ts:731` | `test/composer-history.test.ts:16` (unit only) | `partial` |
 | Escape cancels edit | `src/ui/chat-view.ts:726` | `test/prompt-edit-state.test.ts:5` (unit only) | `partial` |
 | Autocomplete menu opens | `src/ui/chat-view.ts:965` | `test/e2e/specs/autocomplete-dropup.e2e.ts:34` | `covered` |

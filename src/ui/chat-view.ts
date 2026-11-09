@@ -77,6 +77,12 @@ import {
 import { parseSlashInput, slashInputTailAfterFirst, visibleCommands } from "./commands";
 import type { LoadedPlugin } from "../plugins/loader";
 import { isPinnedToBottom } from "./scroll-pinning";
+import {
+  chatHeightForAndroidViewport,
+  composerBottomClearance,
+  isAndroidKeyboardOpen,
+  mobileInputMaxHeight,
+} from "./android-keyboard-layout";
 import { formatCompactionSummary, isSummaryMessage } from "../agent/compaction";
 import { isInstructionFilePath } from "../agent/instructions";
 import { steeringStatus } from "../agent/turn-control";
@@ -232,6 +238,8 @@ export class ChatView extends ItemView {
   private autoScrollPinned = true;
   private userScrollIntent = false;
   private userScrollIntentTimer: number | null = null;
+  private androidViewportFrame: number | null = null;
+  private androidViewportCleanup: (() => void) | null = null;
   private closed = true;
 
   constructor(
@@ -269,6 +277,7 @@ export class ChatView extends ItemView {
   async onOpen(): Promise<void> {
     this.closed = false;
     this.buildLayout();
+    this.observeAndroidViewport();
     // First tab continues the most-recent session (initialize); later tabs each
     // start a fresh session. Each tab's service has its own event subscription.
     this.tabs = [this.createTab()];
@@ -297,6 +306,7 @@ export class ChatView extends ItemView {
 
   async onClose(): Promise<void> {
     this.closed = true;
+    this.androidViewportCleanup?.();
     this.cancelAutocomplete();
     this.menu?.detach();
     this.bubble?.dispose();
@@ -763,6 +773,7 @@ export class ChatView extends ItemView {
       this.scheduleAutocomplete();
     });
     this.inputEl.addEventListener("click", () => this.scheduleAutocomplete());
+    this.inputEl.addEventListener("focus", () => this.scheduleAndroidViewportSync());
     this.inputEl.addEventListener("keyup", (event) => {
       if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) this.scheduleAutocomplete();
     });
@@ -1498,11 +1509,97 @@ export class ChatView extends ItemView {
   private resizeInput(): void {
     if (!Platform.isMobile || !this.inputEl) return;
     this.inputEl.setCssProps({ "--agentic-chat-input-height": "auto" });
-    const maxHeight = Math.min(160, Math.floor(window.innerHeight * 0.28));
+    const viewportHeight =
+      Platform.isAndroidApp && window.visualViewport
+        ? window.visualViewport.height
+        : window.innerHeight;
+    const maxHeight = mobileInputMaxHeight(viewportHeight);
     this.inputEl.setCssProps({
       "--agentic-chat-input-height": `${Math.min(this.inputEl.scrollHeight, maxHeight)}px`,
+      "--agentic-chat-mobile-input-max-height": `${maxHeight}px`,
     });
     this.inputEl.toggleClass("is-scrollable", this.inputEl.scrollHeight > maxHeight);
+  }
+
+  /**
+   * Android can keep the layout viewport at full height while the IME only
+   * shrinks visualViewport. Fit this chat view to that visible slice so Android
+   * does not pan the focused composer toward the middle of the screen.
+   */
+  private observeAndroidViewport(): void {
+    if (!Platform.isAndroidApp || !window.visualViewport) return;
+    const visualViewport = window.visualViewport;
+    const schedule = () => this.scheduleAndroidViewportSync();
+
+    visualViewport.addEventListener("resize", schedule);
+    visualViewport.addEventListener("scroll", schedule);
+    window.addEventListener("resize", schedule);
+    window.addEventListener("orientationchange", schedule);
+
+    const cleanup = () => {
+      visualViewport.removeEventListener("resize", schedule);
+      visualViewport.removeEventListener("scroll", schedule);
+      window.removeEventListener("resize", schedule);
+      window.removeEventListener("orientationchange", schedule);
+      if (this.androidViewportFrame !== null) {
+        window.cancelAnimationFrame(this.androidViewportFrame);
+        this.androidViewportFrame = null;
+      }
+      if (this.androidViewportCleanup === cleanup) this.androidViewportCleanup = null;
+    };
+    this.androidViewportCleanup = cleanup;
+    this.register(cleanup);
+    this.scheduleAndroidViewportSync();
+  }
+
+  private scheduleAndroidViewportSync(): void {
+    if (!Platform.isAndroidApp || this.closed || this.androidViewportFrame !== null) return;
+    this.androidViewportFrame = window.requestAnimationFrame(() => {
+      this.androidViewportFrame = null;
+      this.syncAndroidViewport();
+    });
+  }
+
+  private syncAndroidViewport(): void {
+    if (!Platform.isAndroidApp || this.closed) return;
+    const visualViewport = window.visualViewport;
+    if (!visualViewport) return;
+
+    const rootRect = this.contentEl.getBoundingClientRect();
+    const height = chatHeightForAndroidViewport(rootRect.top, visualViewport);
+    if (height <= 0) return;
+
+    const viewportBottom = visualViewport.offsetTop + visualViewport.height;
+    const keyboardOpen = isAndroidKeyboardOpen(window.innerHeight, visualViewport.height);
+    const navbar = document.querySelector<HTMLElement>(".mobile-navbar");
+    const navbarRect = navbar?.getBoundingClientRect();
+    const navbarStyle = navbar ? getComputedStyle(navbar) : null;
+    const navbarVisible =
+      !!navbarRect &&
+      navbarRect.width > 0 &&
+      navbarRect.height > 0 &&
+      navbarRect.bottom > visualViewport.offsetTop &&
+      navbarRect.top < viewportBottom &&
+      navbarStyle?.display !== "none" &&
+      navbarStyle?.visibility !== "hidden";
+    const safeAreaBottom =
+      Number.parseFloat(
+        getComputedStyle(document.body).getPropertyValue("--safe-area-inset-bottom"),
+      ) || 0;
+    const bottomClearance = composerBottomClearance(
+      viewportBottom,
+      navbarVisible && navbarRect ? navbarRect.top : Number.NaN,
+      safeAreaBottom,
+      keyboardOpen,
+    );
+
+    this.contentEl.setCssProps({
+      "--agentic-chat-visual-height": `${height}px`,
+      "--agentic-chat-android-bottom-clearance": `${bottomClearance}px`,
+    });
+    this.contentEl.addClass("is-android-viewport-synced");
+    this.resizeInput();
+    this.scrollToBottom();
   }
 
   private clearEditingHighlight(): void {

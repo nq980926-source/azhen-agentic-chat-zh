@@ -78,11 +78,84 @@ async function assertChatUsesRootWorkspace(): Promise<void> {
   expect(metrics?.leafWidth).toBeGreaterThanOrEqual((metrics?.viewportWidth ?? 0) * 0.8);
 }
 
+async function measureMobileComposer(): Promise<{
+  viewportHeight: number;
+  root: { top: number; right: number; bottom: number; height: number; overflowY: string; padding: string };
+  messages: { top: number; bottom: number; height: number; scrollHeight: number };
+  composer: { top: number; bottom: number; height: number };
+  field: { top: number; bottom: number; height: number };
+  input: { top: number; bottom: number; height: number; scrollHeight: number; scrollable: boolean };
+  toolbar: { top: number; bottom: number; height: number };
+  mobileNavbar: { top: number; bottom: number; height: number } | null;
+}> {
+  return await browser.execute(() => {
+    const box = (selector: string) => {
+      const element = document.querySelector<HTMLElement>(selector);
+      if (!element) return null;
+      const rect = element.getBoundingClientRect();
+      return {
+        top: Math.round(rect.top * 10) / 10,
+        right: Math.round(rect.right * 10) / 10,
+        bottom: Math.round(rect.bottom * 10) / 10,
+        height: Math.round(rect.height * 10) / 10,
+      };
+    };
+    const rootElement = document.querySelector<HTMLElement>(".agentic-chat-view");
+    const messagesElement = document.querySelector<HTMLElement>(".agentic-chat-messages");
+    const inputElement = document.querySelector<HTMLTextAreaElement>(".agentic-chat-input");
+    const root = box(".agentic-chat-view");
+    const messages = box(".agentic-chat-messages");
+    const composer = box(".agentic-chat-composer");
+    const field = box(".agentic-chat-field");
+    const input = box(".agentic-chat-input");
+    const toolbar = box(".agentic-chat-toolbar");
+    if (!root || !messages || !composer || !field || !input || !toolbar) {
+      throw new Error("mobile composer layout is incomplete");
+    }
+    const rootStyle = rootElement ? getComputedStyle(rootElement) : null;
+    return {
+      viewportHeight: window.innerHeight,
+      root: {
+        ...root,
+        overflowY: rootStyle?.overflowY ?? "",
+        padding: rootStyle?.padding ?? "",
+      },
+      messages: {
+        ...messages,
+        scrollHeight: messagesElement?.scrollHeight ?? 0,
+      },
+      composer,
+      field,
+      input: {
+        ...input,
+        scrollHeight: inputElement?.scrollHeight ?? 0,
+        scrollable: inputElement?.classList.contains("is-scrollable") ?? false,
+      },
+      toolbar,
+      mobileNavbar: box(".mobile-navbar"),
+    };
+  });
+}
+
 async function sendPrompt(prompt: string): Promise<void> {
   const input = await $(".agentic-chat-input");
   await input.click();
   await input.setValue(prompt);
   await $(".agentic-chat-send").click();
+}
+
+async function setComposerDraft(value: string): Promise<void> {
+  await browser.execute((nextValue) => {
+    const input = document.querySelector<HTMLTextAreaElement>(".agentic-chat-input");
+    if (!input) throw new Error("composer textarea not found");
+    input.focus();
+    input.value = nextValue;
+    input.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      inputType: "insertText",
+      data: nextValue,
+    }));
+  }, value);
 }
 
 async function runSlashCommand(command: string): Promise<void> {
@@ -426,6 +499,18 @@ describe("agentic-chat mobile viewport", function () {
     await assertFits(".agentic-chat-field", "composer field");
   });
 
+  it("keeps the composer above native navigation with the transcript taking the remaining height", async function () {
+    const metrics = await measureMobileComposer();
+    expect(metrics.root.overflowY).toBe("hidden");
+    expect(metrics.root.padding).toBe("0px");
+    expect(metrics.messages.height).toBeGreaterThan(metrics.viewportHeight >= 600 ? 300 : 40);
+    expect(Math.abs(metrics.messages.bottom - metrics.composer.top)).toBeLessThanOrEqual(2);
+    if (metrics.mobileNavbar) {
+      expect(metrics.field.bottom).toBeLessThanOrEqual(metrics.mobileNavbar.top + 1);
+    }
+    expect(metrics.toolbar.height).toBeLessThanOrEqual(40);
+  });
+
   it("starts with a compact composer and grows for a multi-line draft", async function () {
     const compact = await browser.execute(() => {
       const input = document.querySelector<HTMLTextAreaElement>(".agentic-chat-input");
@@ -438,8 +523,7 @@ describe("agentic-chat mobile viewport", function () {
     expect(compact.inputHeight).toBeLessThanOrEqual(48);
     expect(compact.fieldHeight).toBeLessThanOrEqual(112);
 
-    const input = await $(".agentic-chat-input");
-    await input.setValue("line one\nline two\nline three\nline four");
+    await setComposerDraft("line one\nline two\nline three\nline four");
     await browser.waitUntil(
       async () =>
         await browser.execute(() => {
@@ -448,7 +532,23 @@ describe("agentic-chat mobile viewport", function () {
         }),
       { timeout: 2_000, timeoutMsg: "multi-line draft did not grow the composer" },
     );
-    await input.setValue("");
+    await setComposerDraft(Array.from({ length: 20 }, (_, index) => `line ${index + 1}`).join("\n"));
+    await browser.waitUntil(
+      async () => {
+        const metrics = await measureMobileComposer();
+        return metrics.input.scrollable && metrics.input.scrollHeight > metrics.input.height;
+      },
+      { timeout: 2_000, timeoutMsg: "long draft did not switch the textarea to internal scrolling" },
+    );
+    const longDraft = await measureMobileComposer();
+    expect(longDraft.input.height).toBeLessThanOrEqual(112);
+    expect(longDraft.field.height).toBeLessThanOrEqual(longDraft.viewportHeight >= 600 ? 170 : 130);
+    expect(longDraft.messages.height).toBeGreaterThan(longDraft.viewportHeight >= 600 ? 250 : 24);
+    await setComposerDraft("");
+    await browser.waitUntil(
+      async () => (await measureMobileComposer()).input.height <= 48,
+      { timeout: 2_000, timeoutMsg: "composer did not collapse after clearing the draft" },
+    );
   });
 
   it("keeps the settings tab UI usable at phone width", async function () {

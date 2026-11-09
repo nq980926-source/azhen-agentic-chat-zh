@@ -68,10 +68,10 @@ await closeAgenticChatSettings();
 | Recover an interrupted plugin install | `src/plugins/service.ts:597` | `test/plugins-service.test.ts:109` | `partial` |
 | Resources: Repair built-ins | `src/settings.ts:2069` | no committed check | `NONE` |
 | Resources: plugins folder and ignore list | `src/settings.ts:2082` | `test/e2e/specs/settings-ui.e2e.ts:435` | `covered` |
-| Resources: plugin row toggle/open/remove | `src/settings.ts:2271` | `test/e2e/specs/mobile-viewport.e2e.ts:404` (row renders only) | `partial` |
+| Resources: plugin row toggle/open/remove | `src/settings.ts:2271` | `test/e2e/specs/mobile-viewport.e2e.ts:554` (row renders only) | `partial` |
 | Resources: subagent timeout | `src/settings.ts:2098` | no committed check | `NONE` |
 | Resources: embedding controls | `src/settings.ts:2116` | no committed check | `NONE` |
-| Settings at phone width | `src/settings.ts:356` | `test/e2e/specs/mobile-viewport.e2e.ts:404` | `covered` |
+| Settings at phone width | `src/settings.ts:356` | `test/e2e/specs/mobile-viewport.e2e.ts:554` | `covered` |
 | `getSettingDefinitions()` | `src/settings.ts:215` | returns `[]`; rendering goes through `display()` | `unreachable` |
 
 ## Gotchas

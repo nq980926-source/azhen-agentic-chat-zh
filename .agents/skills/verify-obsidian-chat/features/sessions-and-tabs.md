@@ -42,7 +42,7 @@ await $(".agentic-chat-session-list").waitForExist();
 |---|---|---|---|
 | Tab strip renders | `src/ui/chat-view.ts:493` | `test/e2e/specs/smoke.e2e.ts:45` | `covered` |
 | `+` adds a tab | `src/ui/chat-view.ts:427` | `test/e2e/specs/multi-tab-approval.e2e.ts:102` | `covered` |
-| Switch between tabs | `src/ui/chat-view.ts:415` | `test/e2e/specs/multi-tab-approval.e2e.ts:102` | `covered` |
+| Switch between tabs | `src/ui/chat-view.ts:425` | `test/e2e/specs/multi-tab-approval.e2e.ts:102` | `covered` |
 | Busy dot on a streaming tab | `src/ui/chat-view.ts:504` | no committed check | `NONE` |
 | Needs-approval tab badge | `src/ui/chat-view.ts:506` | `test/e2e/specs/multi-tab-approval.e2e.ts:102` | `covered` |
 | `x` closes a tab | `src/ui/chat-view.ts:512` | `test/e2e/specs/multi-tab-approval.e2e.ts:167` (calls `closeTab`, does not click `x`) | `partial` |
@@ -55,16 +55,16 @@ await $(".agentic-chat-session-list").waitForExist();
 | Rename a conversation | `src/ui/session-list-modal.ts:143` | `test/e2e/specs/runtime-behavior.e2e.ts:163` | `covered` |
 | Delete a conversation | `src/ui/session-list-modal.ts:130` | `test/e2e/specs/runtime-behavior.e2e.ts:163` | `covered` |
 | Clear all conversations | `src/ui/session-workflow-controller.ts:21` | `test/session-workflow-controller.test.ts:121` (unit only) | `partial` |
-| `/export` | `src/ui/chat-view.ts:2228` | `test/session-export.test.ts:31` (renderer only) | `partial` |
-| Reload a persisted session | `src/ui/chat-view.ts:2496` | `test/e2e/specs/runtime-behavior.e2e.ts:163` | `covered` |
+| `/export` | `src/ui/chat-view.ts:2458` | `test/session-export.test.ts:31` (renderer only) | `partial` |
+| Reload a persisted session | `src/ui/chat-view.ts:2593` | `test/e2e/specs/runtime-behavior.e2e.ts:163` | `covered` |
 | Send waits for an in-flight session swap | `src/agent/session-actions.ts:63` | `test/agent-service.test.ts:1133` | `partial` |
 | Failed swap restores the previous session or recovers on next send | `src/agent/session-actions.ts:273` | `test/session-actions.test.ts:242`; `test/session-actions.test.ts:267` | `partial` |
 | A queued prompt is dropped on session change | `src/ui/session-activation-coordinator.ts:86`; `src/ui/chat-view.ts:1860` | `test/chat-view-lifecycle.test.ts:7`; `test/chat-view-lifecycle.test.ts:118` | `partial` |
-| A queued prompt flushes once the swap is live | `src/ui/chat-view.ts:1345` | `test/chat-view-lifecycle.test.ts:63` | `partial` |
+| A queued prompt flushes once the swap is live | `src/ui/chat-view.ts:1404` | `test/chat-view-lifecycle.test.ts:63` | `partial` |
 | Compaction rewrite rejects a changed session | `src/agent/compaction-runtime.ts:248` | `test/compaction-runtime.test.ts:354`; `test/session-invariants.test.ts:129` | `partial` |
 | A slow append stays in its original session file | `src/session/session-manager.ts:265` | `test/session-invariants.test.ts:91` | `partial` |
-| Do not open one session in two tabs | `src/ui/chat-view.ts:2496` | no committed check | `NONE` |
-| History modal at phone width | `src/ui/session-list-modal.ts:44` | `test/e2e/specs/mobile-viewport.e2e.ts:444` | `covered` |
+| Do not open one session in two tabs | `src/ui/chat-view.ts:2593` | no committed check | `NONE` |
+| History modal at phone width | `src/ui/session-list-modal.ts:44` | `test/e2e/specs/mobile-viewport.e2e.ts:594` | `covered` |
 
 ## Gotchas
 

@@ -60,14 +60,14 @@ await (await modal.$("button=Allow")).click();
 | Safe/YOLO toggle | `src/ui/chat-view.ts:814` | no committed check | `NONE` |
 | `/config` mode picker | `src/ui/chat-view.ts:2310` | no committed check | `NONE` |
 | `/plan` enters sticky plan mode | `src/ui/chat-view.ts:1044` | `test/e2e/specs/runtime-behavior.e2e.ts:220` | `covered` |
-| Plan badge exits plan mode | `src/ui/chat-view.ts:812` | `test/e2e/specs/runtime-behavior.e2e.ts:220` | `covered` |
+| Plan badge exits plan mode | `src/ui/chat-view.ts:850` | `test/e2e/specs/runtime-behavior.e2e.ts:220` | `covered` |
 | Invalid mode transition is blocked | `src/ui/chat-view.ts:1032` | `test/modes.test.ts:100` (unit only) | `partial` |
 | Implement this plan | `src/ui/chat-view.ts:2752` | no committed check | `NONE` |
 | `/dirs` lists working directories | `src/ui/chat-view.ts:1650` | `test/e2e/specs/smoke.e2e.ts:91` | `covered` |
 | `/add-dir` grants a directory | `src/ui/working-directory-workflow-controller.ts:87` | `test/working-directory-workflow-controller.test.ts:69` (unit only) | `partial` |
 | Background-tab approval badge and label | `src/ui/chat-view.ts:559` | `test/e2e/specs/multi-tab-approval.e2e.ts:102` | `covered` |
 | Closing a tab clears its pending approval | `src/ui/chat-view.ts:444` | `test/e2e/specs/multi-tab-approval.e2e.ts:167` | `covered` |
-| Approval modal at phone width | `src/ui/approval-modal.ts:34` | `test/e2e/specs/mobile-viewport.e2e.ts:435` | `covered` |
+| Approval modal at phone width | `src/ui/approval-modal.ts:34` | `test/e2e/specs/mobile-viewport.e2e.ts:585` | `covered` |
 
 ## Gotchas
 

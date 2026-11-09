@@ -80,7 +80,7 @@ await $(".agentic-chat-info").waitForExist();
 | `/agent` | `src/ui/commands.ts:51` | `test/command-dispatcher.test.ts:54` (unit only) | `partial` |
 | `/skill <name>` | `src/ui/commands.ts:50` | `test/e2e/specs/skill-chip.e2e.ts:22` | `covered` |
 | `/skill` with no name (picker) | `src/ui/chat-view.ts:1820` | no committed check | `NONE` |
-| Bare `/<skill-name>` | `src/ui/chat-view.ts:1604` | `test/commands.test.ts:81` (parse only) | `partial` |
+| Bare `/<skill-name>` | `src/ui/chat-view.ts:1828` | `test/commands.test.ts:81` (parse only) | `partial` |
 | Hidden `/project` redirect | `src/ui/commands.ts:55` | no committed check | `NONE` |
 | `/template` as a command | `src/ui/chat-view.ts:1601` | no handler; the word falls through to the model | `unreachable` |
 | `/template <partial>` skill autocomplete | `src/ui/autocomplete.ts:77` | `test/autocomplete.test.ts:42` (unit only) | `partial` |

@@ -61,7 +61,7 @@ await $(".agentic-chat-action-list").waitForExist();
 | Source chips and note open | `src/ui/assistant-bubble.ts:743` | `test/e2e/specs/beautifului-polish.e2e.ts:198` | `covered` |
 | `showFolderMenu()` | `src/ui/working-directory-workflow-controller.ts:22` | only a unit test calls it; no production caller | `unreachable` |
 | `attachFolderMenuItems()` | `src/ui/working-directory-workflow-controller.ts:48` | no caller in `src/` or `test/` | `unreachable` |
-| Context-window bar | `src/ui/chat-view.ts:799` | `test/e2e/specs/smoke.e2e.ts:179` (existence only) | `partial` |
+| Context-window bar | `src/ui/chat-view.ts:813` | `test/e2e/specs/smoke.e2e.ts:179` (existence only) | `partial` |
 
 ## Gotchas
 

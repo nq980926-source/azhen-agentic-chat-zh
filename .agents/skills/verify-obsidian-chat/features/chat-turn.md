@@ -74,7 +74,7 @@ await browser.waitUntil(async () =>
 | Implement this plan | `src/ui/chat-view.ts:2752` | no committed check | `NONE` |
 | Error banner Retry | `src/ui/assistant-bubble.ts:783` | no committed check | `NONE` |
 | Edit and resend a user turn | `src/ui/chat-view.ts:2635` | `test/prompt-edit-state.test.ts:5` (state only) | `partial` |
-| Context-window bar | `src/ui/chat-view.ts:799` | `test/e2e/specs/smoke.e2e.ts:179` (existence only) | `partial` |
+| Context-window bar | `src/ui/chat-view.ts:813` | `test/e2e/specs/smoke.e2e.ts:179` (existence only) | `partial` |
 | Usage readout | `src/ui/chat-view.ts:2216` | no committed check | `NONE` |
 | Background-tab completion notice | `src/ui/chat-view.ts:1256` | no committed check | `NONE` |
 
