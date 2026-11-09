@@ -67,7 +67,7 @@ await clickMcpAddButton("Add MCP server");
 | Test connection / refresh tools | `src/settings.ts:1259` | `test/mcp-tools.test.ts:229` (probe helper only) | `partial` |
 | Tool allowlist/denylist | `src/settings.ts:1395` | `test/mcp-tools.test.ts:174` (unit only) | `partial` |
 | Per-tool MCP approvals | `src/settings.ts:1448` | no committed check | `NONE` |
-| Azhen Knowledge write tools and YOLO-safe approvals | `src/agent/azhen-knowledge-policy.ts:78`; `src/settings-schema.ts:236` | `test/azhen-knowledge-policy.test.ts:65`; `test/tool-call-controller.test.ts:702` (unit only) | `partial` |
+| Azhen Knowledge write tools and YOLO-safe approvals | `src/agent/azhen-knowledge-policy.ts:121`; `src/agent/runtime-resources.ts:101`; `src/settings.ts:313`; `src/settings-schema.ts:236` | `test/azhen-knowledge-policy.test.ts:76`; `test/tool-call-controller.test.ts:741` (unit only) | `partial` |
 | Setup guide / Copy config | `src/settings.ts:1940` | `test/e2e/specs/settings-ui.e2e.ts:268` (button existence only) | `partial` |
 | Composio bundle: 2 skills + 1 MCP | `src/plugins/import/install.ts:49` | `test/e2e/specs/composio-install.e2e.ts:27` | `covered` |
 | Imported MCP servers start disabled | `src/plugins/loader.ts:322` | `test/e2e/specs/settings-ui.e2e.ts:311` | `covered` |

@@ -58,7 +58,7 @@ await (await modal.$("button=Allow")).click();
 | Per-tool override through settings | `src/settings.ts:784` | `test/e2e/specs/settings-ui.e2e.ts:221` | `covered` |
 | Per-tool deny flips to allow in a recorded run | `src/settings.ts:784` | `test/e2e/probe/scenarios/settings-gate.e2e.ts:75` | `covered` |
 | Working dir auto-runs inside and asks outside | `src/agent/tool-call-controller.ts:266` | `test/e2e/specs/approval-deterministic.e2e.ts:395` | `covered` |
-| Knowledge body cannot bypass MCP through local Vault writes | `src/agent/tool-call-controller.ts:243`; `src/agent/azhen-knowledge-policy.ts:63` | `test/tool-call-controller.test.ts:574` (unit only) | `partial` |
+| Knowledge body cannot bypass MCP through local Vault writes | `src/agent/tool-call-controller.ts:318`; `src/agent/azhen-knowledge-policy.ts:106` | `test/tool-call-controller.test.ts:580` (unit only) | `partial` |
 | Working directories settings row | `src/settings.ts:795` | no committed check | `NONE` |
 | Safe/YOLO toggle | `src/ui/chat-view.ts:814` | no committed check | `NONE` |
 | `/config` mode picker | `src/ui/chat-view.ts:2310` | no committed check | `NONE` |

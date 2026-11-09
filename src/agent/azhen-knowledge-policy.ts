@@ -3,6 +3,7 @@ import type { McpServerState } from "../mcp/settings";
 
 export const AZHEN_KNOWLEDGE_WRITE_POLICY_REVISION = 1 as const;
 export const AZHEN_KNOWLEDGE_MCP_SERVER_ID_PATTERN = /^plugin_knowledge_[a-z0-9]+_[a-f0-9]{12}$/;
+export const AZHEN_KNOWLEDGE_MCP_ENDPOINT = "https://106.55.92.40/mcp";
 
 export const AZHEN_KNOWLEDGE_ENABLED_TOOLS = [
   "list_files",
@@ -35,7 +36,49 @@ export const AZHEN_KNOWLEDGE_PROMPT_OVERLAY = `## Azhen Knowledge MCP write boun
 - Never write, rename, delete, or change properties in a knowledge-base note through the local Vault tools. Local Vault mutations are restricted to the ${AZHEN_BUSINESS_SKILLS_PACKAGE} Skills package for maintenance.`;
 
 export function isAzhenKnowledgeMcpServerId(serverId: string): boolean {
+  // Compatibility clue only. Authorization decisions must confirm the endpoint
+  // because a plugin-derived server id changes with the plugin package name.
   return AZHEN_KNOWLEDGE_MCP_SERVER_ID_PATTERN.test(serverId);
+}
+
+/**
+ * Canonical MCP endpoint used for identity checks. The URL parser normalizes the
+ * scheme, host, and default port. Remove one trailing slash from a non-root path
+ * while preserving path case and query semantics.
+ */
+export function canonicalizeAzhenKnowledgeMcpEndpoint(endpoint: string | undefined): string | undefined {
+  if (!endpoint?.trim()) return undefined;
+  try {
+    const url = new URL(endpoint.trim());
+    if (url.protocol !== "https:" || url.username || url.password || url.hash) return undefined;
+    let pathname = url.pathname;
+    if (pathname.length > 1 && pathname.endsWith("/")) pathname = pathname.slice(0, -1);
+    return `${url.origin}${pathname}${url.search}`;
+  } catch {
+    return undefined;
+  }
+}
+
+const CANONICAL_AZHEN_KNOWLEDGE_MCP_ENDPOINT = canonicalizeAzhenKnowledgeMcpEndpoint(
+  AZHEN_KNOWLEDGE_MCP_ENDPOINT,
+)!;
+
+export function isAzhenKnowledgeMcpEndpoint(endpoint: string | undefined): boolean {
+  return canonicalizeAzhenKnowledgeMcpEndpoint(endpoint) === CANONICAL_AZHEN_KNOWLEDGE_MCP_ENDPOINT;
+}
+
+type AzhenKnowledgeMcpState = Pick<
+  McpServerState,
+  "enabled" | "lastUrl" | "azhenKnowledgeWritePolicy"
+>;
+
+function isAzhenKnowledgeMcpState(state: AzhenKnowledgeMcpState): boolean {
+  // The marker is set only after an endpoint-confirmed, one-time migration. It
+  // keeps the local-write boundary active while the server is temporarily offline.
+  return (
+    state.azhenKnowledgeWritePolicy === AZHEN_KNOWLEDGE_WRITE_POLICY_REVISION ||
+    isAzhenKnowledgeMcpEndpoint(state.lastUrl)
+  );
 }
 
 export function azhenKnowledgeMcpLocalToolName(serverId: string, remoteToolName: string): string {
@@ -43,30 +86,30 @@ export function azhenKnowledgeMcpLocalToolName(serverId: string, remoteToolName:
 }
 
 export function hasEnabledAzhenKnowledgeMcp(settings: {
-  mcp: { enabled: boolean; servers: Array<{ id: string; enabled: boolean }> };
-  plugins: { mcpState: Record<string, Pick<McpServerState, "enabled">> };
+  mcp: { enabled: boolean; servers: Array<{ enabled: boolean; url?: string }> };
+  plugins: { mcpState: Record<string, AzhenKnowledgeMcpState> };
 }): boolean {
   if (!settings.mcp.enabled) return false;
   if (
-    Object.entries(settings.plugins.mcpState).some(
-      ([serverId, state]) => isAzhenKnowledgeMcpServerId(serverId) && state.enabled,
+    Object.values(settings.plugins.mcpState).some(
+      (state) => isAzhenKnowledgeMcpState(state) && state.enabled,
     )
   ) {
     return true;
   }
   return settings.mcp.servers.some(
-    (server) => isAzhenKnowledgeMcpServerId(server.id) && server.enabled,
+    (server) => server.enabled && isAzhenKnowledgeMcpEndpoint(server.url),
   );
 }
 
 /** The local-write boundary persists even if MCP or the server is temporarily disabled. */
 export function hasConfiguredAzhenKnowledgeMcp(settings: {
-  mcp: { servers: Array<{ id: string }> };
-  plugins: { mcpState: Record<string, unknown> };
+  mcp: { servers: Array<{ url?: string }> };
+  plugins: { mcpState: Record<string, AzhenKnowledgeMcpState> };
 }): boolean {
   return (
-    Object.keys(settings.plugins.mcpState).some(isAzhenKnowledgeMcpServerId) ||
-    settings.mcp.servers.some((server) => isAzhenKnowledgeMcpServerId(server.id))
+    Object.values(settings.plugins.mcpState).some(isAzhenKnowledgeMcpState) ||
+    settings.mcp.servers.some((server) => isAzhenKnowledgeMcpEndpoint(server.url))
   );
 }
 
@@ -81,8 +124,8 @@ export function migrateAzhenKnowledgeMcpWritePolicy(
 ): boolean {
   let changed = false;
   for (const [serverId, state] of Object.entries(mcpState)) {
-    if (!isAzhenKnowledgeMcpServerId(serverId)) continue;
     if (state.azhenKnowledgeWritePolicy === AZHEN_KNOWLEDGE_WRITE_POLICY_REVISION) continue;
+    if (!isAzhenKnowledgeMcpEndpoint(state.lastUrl)) continue;
     if (!sameToolSet(state.enabledTools, LEGACY_READ_ONLY_TOOLS)) continue;
 
     state.enabledTools = [...AZHEN_KNOWLEDGE_ENABLED_TOOLS];

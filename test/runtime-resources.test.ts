@@ -15,7 +15,10 @@ import type { ToolArtifactStoreLike } from "../src/artifacts/tool-artifact-store
 import type { WebFetcher } from "../src/tools/web-fetch";
 import { createMcpServerSettings, createMcpServerState } from "../src/mcp/settings";
 import { pluginMcpServerId } from "../src/plugins/loader";
-import { AZHEN_KNOWLEDGE_PROMPT_OVERLAY } from "../src/agent/azhen-knowledge-policy";
+import {
+  AZHEN_KNOWLEDGE_MCP_ENDPOINT,
+  AZHEN_KNOWLEDGE_PROMPT_OVERLAY,
+} from "../src/agent/azhen-knowledge-policy";
 import { FakeApp } from "./helpers/fake-vault";
 
 /** A persisted, user-enabled record for the seeded mcp-server plugin. */
@@ -38,6 +41,32 @@ function fakeAdapter(files: Record<string, string>): DataAdapter {
     exists: async (path: string) => path in files,
     read: async (path: string) => files[path] ?? "",
   } as unknown as DataAdapter;
+}
+
+async function androidKnowledgeApp(): Promise<App> {
+  const app = new FakeApp();
+  await app.vault.createFolder(".agentic-plugins");
+  await app.vault.createFolder(".agentic-plugins/plugin");
+  await app.vault.create(
+    ".agentic-plugins/plugin/plugin.json",
+    JSON.stringify({
+      $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+      name: "plugin",
+      version: "1.0.0",
+      description: "MCP server added from Agentic Chat settings.",
+    }),
+  );
+  await app.vault.create(
+    ".agentic-plugins/plugin/mcp.json",
+    JSON.stringify({
+      $schema: "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
+      mcpServers: {
+        mcp: { type: "streamable-http", url: AZHEN_KNOWLEDGE_MCP_ENDPOINT },
+      },
+    }),
+  );
+  (app.vault as unknown as { adapter: DataAdapter }).adapter = fakeAdapter({});
+  return app as unknown as App;
 }
 
 async function seededApp(): Promise<App> {
@@ -199,7 +228,11 @@ describe("agent runtime resources", () => {
         plugins: {
           ...DEFAULT_SETTINGS.plugins,
           mcpState: {
-            [serverId]: createMcpServerState(serverId, { enabled: true, approval: "ask" }),
+            [serverId]: createMcpServerState(serverId, {
+              enabled: true,
+              approval: "ask",
+              lastUrl: AZHEN_KNOWLEDGE_MCP_ENDPOINT,
+            }),
           },
         },
       }),
@@ -222,7 +255,11 @@ describe("agent runtime resources", () => {
         plugins: {
           ...DEFAULT_SETTINGS.plugins,
           mcpState: {
-            [serverId]: createMcpServerState(serverId, { enabled: false, approval: "ask" }),
+            [serverId]: createMcpServerState(serverId, {
+              enabled: false,
+              approval: "ask",
+              lastUrl: AZHEN_KNOWLEDGE_MCP_ENDPOINT,
+            }),
           },
         },
       }),
@@ -231,6 +268,65 @@ describe("agent runtime resources", () => {
     );
 
     expect(prompt).not.toContain(AZHEN_KNOWLEDGE_PROMPT_OVERLAY);
+  });
+
+  it("injects Knowledge MCP rules for an Android-derived server id at the canonical endpoint", () => {
+    const serverId = "plugin_plugin_mcp_4b3828edfaf8";
+    const prompt = composeAgentSystemPrompt(
+      settings({
+        mcp: { enabled: true, proxyUrl: "", noProxy: "", servers: [] },
+        plugins: {
+          ...DEFAULT_SETTINGS.plugins,
+          mcpState: {
+            [serverId]: createMcpServerState(serverId, {
+              enabled: true,
+              approval: "ask",
+              lastUrl: AZHEN_KNOWLEDGE_MCP_ENDPOINT,
+            }),
+          },
+        },
+      }),
+      EMPTY_AGENT_RUNTIME_RESOURCES,
+      "",
+    );
+
+    expect(prompt).toContain(AZHEN_KNOWLEDGE_PROMPT_OVERLAY);
+  });
+
+  it("migrates Android Knowledge after runtime plugin loading supplies a missing endpoint", async () => {
+    const serverId = "plugin_plugin_mcp_4b3828edfaf8";
+    const configured = settings({
+      mcp: { enabled: false, proxyUrl: "", noProxy: "", servers: [] },
+      plugins: {
+        ...DEFAULT_SETTINGS.plugins,
+        mcpState: {
+          [serverId]: createMcpServerState(serverId, {
+            enabled: true,
+            approval: "ask",
+            enabledTools: ["list_files", "read_file"],
+          }),
+        },
+      },
+    });
+    let saves = 0;
+
+    await loadAgentRuntimeResources(await androidKnowledgeApp(), configured, undefined, () => {
+      saves += 1;
+    });
+
+    const state = configured.plugins.mcpState[serverId];
+    expect(state.lastUrl).toBe(AZHEN_KNOWLEDGE_MCP_ENDPOINT);
+    expect(state.enabledTools).toEqual([
+      "list_files",
+      "read_file",
+      "create_file",
+      "write_file",
+      "edit_file",
+      "append_file",
+      "move_to_trash",
+    ]);
+    expect(state.azhenKnowledgeWritePolicy).toBe(1);
+    expect(saves).toBe(1);
   });
 
   it("builds parent tools from the loaded resource snapshot", () => {

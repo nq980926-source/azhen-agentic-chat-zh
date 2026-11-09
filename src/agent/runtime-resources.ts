@@ -32,6 +32,7 @@ import { formatInstructionsOverlay, loadVaultInstructions } from "./instructions
 import {
   AZHEN_KNOWLEDGE_PROMPT_OVERLAY,
   hasEnabledAzhenKnowledgeMcp,
+  migrateAzhenKnowledgeMcpWritePolicy,
 } from "./azhen-knowledge-policy";
 import {
   type AgentRole,
@@ -97,6 +98,18 @@ export async function loadAgentRuntimeResources(
   // state (enabled/approval/auth/knownTools/oauth) lives in settings.plugins.mcpState
   // keyed by stable id. No merge with settings.mcp.servers — the two cannot diverge.
   const pluginServers = plugins.filter((plugin) => plugin.enabled).flatMap((plugin) => plugin.mcpServers);
+  let knowledgeIdentityChanged = false;
+  for (const server of pluginServers) {
+    const state = settings.plugins.mcpState[server.id];
+    if (state && !state.lastUrl) {
+      state.lastUrl = server.url;
+      knowledgeIdentityChanged = true;
+    }
+  }
+  if (migrateAzhenKnowledgeMcpWritePolicy(settings.plugins.mcpState, settings.approval)) {
+    knowledgeIdentityChanged = true;
+  }
+  if (knowledgeIdentityChanged) await onSettingsChanged?.();
   const mcpServers = resolveMcpServers(settings, pluginServers);
   // Plugin servers are runtime copies: their shape comes from mcp.json and their
   // auth state comes from settings.plugins.mcpState. A refresh or challenge

@@ -47,32 +47,32 @@ await closeAgenticChatSettings();
 | entry point | source | proof | status |
 |---|---|---|---|
 | Settings tab opens | `src/main.ts:137` | `test/e2e/specs/settings-ui.e2e.ts:180` (opened by the helper via `app.setting`, not the nav) | `partial` |
-| Tabs render and switch | `src/settings.ts:223` | `test/e2e/specs/settings-ui.e2e.ts:180` | `covered` |
-| Models: provider, API key, base URL, model | `src/settings.ts:386` | `test/e2e/specs/settings-ui.e2e.ts:180` | `covered` |
-| Secrets stay out of `data.json` | `src/settings.ts:1992` | `test/e2e/specs/settings-ui.e2e.ts:180` | `covered` |
-| OpenRouter privacy toggles | `src/settings.ts:471` | no committed check | `NONE` |
-| Ollama server URL and model | `src/settings.ts:503` | no committed check | `NONE` |
-| Global network proxy | `src/settings.ts:393` | no committed check | `NONE` |
-| Agent: permission mode dropdown | `src/settings.ts:611` | no committed check | `NONE` |
-| Agent: sampling, timeout, retries, prompt, compaction, budget | `src/settings.ts:608` | no committed check | `NONE` |
-| Approval gates and per-tool overrides | `src/settings.ts:746` | `test/e2e/specs/settings-ui.e2e.ts:221` | `covered` |
-| Approval: working directories row | `src/settings.ts:795` | no committed check | `NONE` |
-| Web: enable, provider, key, results, fetch limit | `src/settings.ts:842` | `test/e2e/specs/settings-ui.e2e.ts:232` | `covered` |
-| Web: allowed hosts | `src/settings.ts:941` | no committed check | `NONE` |
-| MCP tab | `src/settings.ts:933` | `test/e2e/specs/settings-ui.e2e.ts:268` | `covered` |
-| Observability with Langfuse | `src/settings.ts:1069` | `test/e2e/specs/settings-ui.e2e.ts:394` | `covered` |
-| Observability: generic OTLP auth header | `src/settings.ts:1190` | `test/e2e/specs/settings-migration.e2e.ts:199` (migration only) | `partial` |
-| Notifications tab | `src/settings.ts:1959` | no committed check | `NONE` |
-| Resources: Install plugin | `src/settings.ts:2051` | `test/e2e/specs/settings-ui.e2e.ts:311` | `covered` |
+| Tabs render and switch | `src/settings.ts:224` | `test/e2e/specs/settings-ui.e2e.ts:180` | `covered` |
+| Models: provider, API key, base URL, model | `src/settings.ts:387` | `test/e2e/specs/settings-ui.e2e.ts:180` | `covered` |
+| Secrets stay out of `data.json` | `src/settings.ts:1993` | `test/e2e/specs/settings-ui.e2e.ts:180` | `covered` |
+| OpenRouter privacy toggles | `src/settings.ts:472` | no committed check | `NONE` |
+| Ollama server URL and model | `src/settings.ts:504` | no committed check | `NONE` |
+| Global network proxy | `src/settings.ts:412` | no committed check | `NONE` |
+| Agent: permission mode dropdown | `src/settings.ts:612` | no committed check | `NONE` |
+| Agent: sampling, timeout, retries, prompt, compaction, budget | `src/settings.ts:609` | no committed check | `NONE` |
+| Approval gates and per-tool overrides | `src/settings.ts:747` | `test/e2e/specs/settings-ui.e2e.ts:221` | `covered` |
+| Approval: working directories row | `src/settings.ts:796` | no committed check | `NONE` |
+| Web: enable, provider, key, results, fetch limit | `src/settings.ts:843` | `test/e2e/specs/settings-ui.e2e.ts:232` | `covered` |
+| Web: allowed hosts | `src/settings.ts:942` | no committed check | `NONE` |
+| MCP tab | `src/settings.ts:934` | `test/e2e/specs/settings-ui.e2e.ts:268` | `covered` |
+| Observability with Langfuse | `src/settings.ts:1070` | `test/e2e/specs/settings-ui.e2e.ts:394` | `covered` |
+| Observability: generic OTLP auth header | `src/settings.ts:1191` | `test/e2e/specs/settings-migration.e2e.ts:199` (migration only) | `partial` |
+| Notifications tab | `src/settings.ts:1968` | no committed check | `NONE` |
+| Resources: Install plugin | `src/settings.ts:2052` | `test/e2e/specs/settings-ui.e2e.ts:311` | `covered` |
 | Resources: archive-file picker | `src/ui/install-plugin-modal.ts:114` | `test/install-plugin-modal.test.ts:68` (DOM wiring and import path; Android device pending) | `partial` |
 | Recover an interrupted plugin install | `src/plugins/service.ts:597` | `test/plugins-service.test.ts:109` | `partial` |
-| Resources: Repair built-ins | `src/settings.ts:2069` | no committed check | `NONE` |
-| Resources: plugins folder and ignore list | `src/settings.ts:2082` | `test/e2e/specs/settings-ui.e2e.ts:435` | `covered` |
-| Resources: plugin row toggle/open/remove | `src/settings.ts:2271` | `test/e2e/specs/mobile-viewport.e2e.ts:554` (row renders only) | `partial` |
-| Resources: subagent timeout | `src/settings.ts:2098` | no committed check | `NONE` |
-| Resources: embedding controls | `src/settings.ts:2116` | no committed check | `NONE` |
-| Settings at phone width | `src/settings.ts:356` | `test/e2e/specs/mobile-viewport.e2e.ts:554` | `covered` |
-| `getSettingDefinitions()` | `src/settings.ts:215` | returns `[]`; rendering goes through `display()` | `unreachable` |
+| Resources: Repair built-ins | `src/settings.ts:2070` | no committed check | `NONE` |
+| Resources: plugins folder and ignore list | `src/settings.ts:2083` | `test/e2e/specs/settings-ui.e2e.ts:435` | `covered` |
+| Resources: plugin row toggle/open/remove | `src/settings.ts:2272` | `test/e2e/specs/mobile-viewport.e2e.ts:554` (row renders only) | `partial` |
+| Resources: subagent timeout | `src/settings.ts:2099` | no committed check | `NONE` |
+| Resources: embedding controls | `src/settings.ts:2117` | no committed check | `NONE` |
+| Settings at phone width | `src/settings.ts:357` | `test/e2e/specs/mobile-viewport.e2e.ts:554` | `covered` |
+| `getSettingDefinitions()` | `src/settings.ts:216` | returns `[]`; rendering goes through `display()` | `unreachable` |
 
 ## Gotchas
 

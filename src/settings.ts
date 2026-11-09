@@ -11,6 +11,7 @@ import {
   type ProviderId,
 } from "./llm/models";
 import { type ApprovalPolicy, clearMcpPerToolApprovals, setPerToolApproval } from "./agent/approval";
+import { migrateAzhenKnowledgeMcpWritePolicy } from "./agent/azhen-knowledge-policy";
 import { type AgentMode, MODE_ORDER, MODES } from "./agent/modes";
 import { addWorkingDir, removeWorkingDir } from "./agent/working-dir";
 import { DEFAULT_SYSTEM_PROMPT } from "./agent/system-prompt";
@@ -307,6 +308,14 @@ export class AgenticChatSettingTab extends PluginSettingTab {
         existing.lastUrl = server.url;
         mutated = true;
       }
+    }
+    if (
+      migrateAzhenKnowledgeMcpWritePolicy(
+        this.plugin.settings.plugins.mcpState,
+        this.plugin.settings.approval,
+      )
+    ) {
+      mutated = true;
     }
     // A retained import backup still owns the state keys of its package. Keep
     // them until the backup is restored or removed, then prune on a later pass.
