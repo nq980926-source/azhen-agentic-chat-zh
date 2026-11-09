@@ -1,8 +1,11 @@
-# 0.51.15 formal release
-a403fad4194214bc9fc9bfdd078fc6cea8116403532f954e4934a6a242926cbb  main.js
-eeb446c27e13cb40de3a315cac388b64885a6698ca68b7c76a2e77ece4b5a251  manifest.json
+# 0.51.16 formal release
+3254674e20c52d2b1d1fc3dcabac7c5e64f0823881a0eacf58de725d880e6704  main.js
+ae8ffbdc8d32ba5182d1d050e8f2dbcc27bddee3b8b140878dbc980920393ff4  manifest.json
 9f045e5b2953b373b6c46320ace07aa1543bc5279d4655fef606488684548d63  styles.css
-79a5099c1f157f3ee301f4aa12e3997f3fc358ce1f50ff03a51b534b8f43a3e7  versions.json
+be6dab40e7d5a91ffa815cd329853a4451075fd74602c12653dd0c0c2dc80a9c  versions.json
+bcac714ded527026ca1924e21f23214872ab590e21e4e27c484d64e54c09e84d  release/0.51.16/agentic-chat-0.51.16.zip
+
+# Retained 0.51.15 rollback archive
 d72da6ceefc0aa8cc375b8d02db145cee6dc89ab3ab5667b70dcb2865e0ba3e1  release/0.51.15/agentic-chat-0.51.15.zip
 
 # Retained 0.51.14 rollback archive
