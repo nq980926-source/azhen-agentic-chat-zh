@@ -1,6 +1,6 @@
 # 阿斟 · Agentic Chat 简体中文汉化版
 
-这是 Obsidian 插件 [Agentic Chat](https://github.com/tardigrde/obsidian-agentic-chat) 的**非官方简体中文汉化构建**，保留阿斟 Memory 聊天联动、Knowledge MCP、模型设置、工具审批和聊天历史能力。当前正式版本为 **0.51.16**，Windows 与 Android 使用同一组插件文件。
+这是 Obsidian 插件 [Agentic Chat](https://github.com/tardigrde/obsidian-agentic-chat) 的**非官方简体中文汉化构建**，保留阿斟 Memory 聊天联动、Knowledge MCP、模型设置、工具审批和聊天历史能力。当前正式版本为 **0.51.17**，Windows 与 Android 使用同一组插件文件。
 
 > 本项目并非 Agentic Chat 官方版本，与原作者无官方隶属关系。原项目作者为 [tardigrde](https://github.com/tardigrde)。
 
@@ -17,6 +17,7 @@
 - Knowledge MCP 通过正式 HTTPS 端点跨设备识别同一服务，不再依赖 Windows 或 Android 各自的插件生成服务器 ID。
 - Knowledge MCP 恢复新增、覆盖、精确编辑、追加和软删除能力；五个写工具在 Safe/YOLO 下均使用 per-tool 审批。
 - 知识库正文不能通过本地 Vault 写工具绕过 MCP；本地写入仅保留给业务 Skills 维护。
+- 每次模型请求都会获得设备本地日期、时间、星期、IANA 时区、昨天、明天及本周/上周范围。
 - 桌面端继续使用原有右侧栏布局和操作习惯。
 
 ## 安装
@@ -41,13 +42,13 @@
 
 ## 兼容与更新
 
-- 插件版本：`0.51.16`
+- 插件版本：`0.51.17`
 - 最低 Obsidian 版本：`1.11.4`
 - 同一个仓库中，汉化版与原版不能作为两个不同插件并存（两者 ID 相同）。
 - 安装后不要删除原有 `data.json`、`sessions/`、`artifacts/` 等数据。
 - 更新自定义汉化版时，注意避免社区插件更新将它覆盖。
 
-0.51.16 的正式构建通过 TypeScript、ESLint、生产构建和移动兼容检查；受影响 Knowledge MCP、运行时资源、审批边界与设置测试共 142 项通过。Windows 与 Android 都会通过正式端点识别同一个 Knowledge MCP 服务，并在首次加载时各自执行一次七工具配置迁移；用户已关闭的工具不会被反复开启。升级不需要重新填写 Token、知识库路径或统计参数。Android 真机和一次生产知识库写入仍需在升级后验收。
+0.51.17 的正式构建通过 TypeScript、ESLint、生产构建和移动兼容检查；统一日期上下文相关测试 34 项通过。日期按设备实际 IANA 时区计算，不把 UTC 日期当作本地日期，并覆盖跨月、跨年、闰年、夏令时和跨午夜更新。父 Agent、子 Agent 与原有自定义系统提示、Knowledge MCP、安全审批和业务 Skills 兼容。升级不需要重新填写 Token、知识库路径或统计参数；系统时区变化仍需在 Windows 和 Android 真机上做最终使用验收。
 
 ## 原项目、许可与致谢
 
