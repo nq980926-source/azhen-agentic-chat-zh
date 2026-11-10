@@ -2,6 +2,7 @@ import type { App } from "obsidian";
 import type { AgentMessage, AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 import type { AgenticChatSettings } from "../settings";
+import type { ToolArtifactStoreLike } from "../artifacts/tool-artifact-store";
 import {
   buildFinanceFactFromSources,
   financeFactMarkdown,
@@ -43,6 +44,7 @@ export interface AzhenFinanceToolOptions {
   getSettings: () => AgenticChatSettings;
   getMcpTools: () => AgentTool[];
   getTurnContext: () => AzhenFinanceTurnContext;
+  artifactStore?: ToolArtifactStoreLike;
 }
 
 interface McpEnvelope {
@@ -186,10 +188,19 @@ export class AzhenFinanceRuntime {
       { relative_path: path },
       signal,
     );
-    const details = result.details as { structuredContent?: unknown } | undefined;
+    const details = result.details as {
+      artifactId?: unknown;
+      structuredContent?: unknown;
+    } | undefined;
     let envelope: McpEnvelope;
     if (details?.structuredContent && typeof details.structuredContent === "object") {
       envelope = details.structuredContent as McpEnvelope;
+    } else if (typeof details?.artifactId === "string") {
+      if (!this.options.artifactStore) {
+        throw new Error(`读取 ${path} 返回了分段回执，但当前没有可用的 Artifact 存储。`);
+      }
+      const artifact = await this.options.artifactStore.readArtifact(details.artifactId);
+      envelope = parseMcpEnvelope(artifact.text);
     } else {
       const text = result.content.find(
         (part): part is { type: "text"; text: string } =>
@@ -199,8 +210,7 @@ export class AzhenFinanceRuntime {
           typeof (part as { text?: unknown }).text === "string",
       )?.text;
       if (!text) throw new Error(`读取 ${path} 没有回执。`);
-      const raw = unwrapToolOutput(text);
-      envelope = JSON.parse(raw.slice(raw.indexOf("{"))) as McpEnvelope;
+      envelope = parseMcpEnvelope(unwrapToolOutput(text));
     }
     if (envelope.status !== "success") {
       throw new FinanceReadError(path, envelope.error ?? envelope.status);
@@ -219,6 +229,42 @@ export class AzhenFinanceRuntime {
     }
     return { path, content: payload.content, sha256: payload.sha256 };
   }
+}
+
+function parseMcpEnvelope(text: string): McpEnvelope {
+  const start = text.indexOf("{");
+  if (start < 0) throw new Error("MCP 读取回执不是 JSON 对象。");
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < text.length; index += 1) {
+    const character = text[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+    if (character === "\"") {
+      inString = true;
+    } else if (character === "{") {
+      depth += 1;
+    } else if (character === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        const parsed = JSON.parse(text.slice(start, index + 1)) as unknown;
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          throw new Error("MCP 读取回执不是 JSON 对象。");
+        }
+        return parsed as McpEnvelope;
+      }
+    }
+  }
+  throw new Error("MCP 读取回执 JSON 不完整。");
 }
 
 class FinanceReadError extends Error {

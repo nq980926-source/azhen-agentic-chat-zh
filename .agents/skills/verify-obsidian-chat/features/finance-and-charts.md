@@ -32,8 +32,8 @@ same Markdown shape produced by `azhen_finance_query`.
 | entry point | source | proof | status |
 |---|---|---|---|
 | Exact ledger parsing and `FinanceFact` | `src/finance/azhen-finance.ts:208`; `src/finance/azhen-finance.ts:274` | `test/azhen-finance.test.ts:38` (unit only; live-vault shape checked separately) | `partial` |
-| Finance query tool and chart payload | `src/tools/azhen-finance-tools.ts:65`; `src/tools/azhen-finance-tools.ts:85` | `test/azhen-finance-tools.test.ts:75` (unit only) | `partial` |
-| Charts Markdown in chat | `src/ui/assistant-bubble.ts:717` | `test/e2e/specs/finance-charts.e2e.ts:95` (spec committed; this run was blocked before Obsidian launch) | `partial` |
+| Finance query tool and chart payload | `src/tools/azhen-finance-tools.ts:67`; `src/tools/azhen-finance-tools.ts:87` | `test/azhen-finance-tools.test.ts:75` (unit only) | `partial` |
+| Charts Markdown in chat | `src/ui/assistant-bubble.ts:717` | `test/e2e/specs/finance-charts.e2e.ts:176` | `covered` |
 
 ## Gotchas
 
@@ -41,4 +41,5 @@ same Markdown shape produced by `azhen_finance_query`.
   chart block.
 - `advanced-chart` takes Chart.js JSON, not YAML.
 - Missing ledger months produce partial coverage and no chart.
+- Large MCP receipts are read back through the existing artifact store.
 - Mermaid is not a fallback for this flow.

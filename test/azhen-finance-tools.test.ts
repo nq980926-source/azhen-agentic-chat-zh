@@ -193,6 +193,72 @@ describe("azhen finance query tool", () => {
     ]);
   });
 
+  it("reads the complete ledger behind an MCP artifact receipt", async () => {
+    const app = new FakeApp();
+    (app.vault as unknown as { configDir: string }).configDir = ".obsidian";
+    (app as unknown as { plugins: unknown }).plugins = {
+      enabledPlugins: new Set(["obsidian-charts"]),
+      plugins: { "obsidian-charts": {} },
+    };
+    const files = new Map([
+      ["生活/记账/用户财务档案.md", "# 财务档案\n\n- 项目制已取消\n"],
+      ["生活/记账/账本/2026-11.md", ledger],
+    ]);
+    const normal = readTool(files);
+    const artifactText = [
+      "Structured content:",
+      JSON.stringify({
+        status: "success",
+        operation: "read_file",
+        path: "生活/记账/账本/2026-11.md",
+        result: { content: ledger, sha256: await sha256Hex(ledger) },
+      }),
+    ].join("\n");
+    const artifactRead = {
+      ...normal,
+      execute: async (_id: string, input: unknown) => {
+        const path = String((input as { relative_path?: unknown }).relative_path ?? "");
+        if (path !== "生活/记账/账本/2026-11.md") {
+          return await normal.execute(_id, input);
+        }
+        return {
+          content: [{ type: "text" as const, text: "MCP result stored as artifact fixture" }],
+          details: { artifactId: "finance-ledger-artifact" },
+        };
+      },
+    } as AgentTool;
+    const tool = createAzhenFinanceTools({
+      app: app as never,
+      getSettings: settings,
+      getMcpTools: () => [artifactRead],
+      getTurnContext: () => context("本月钱花在哪里"),
+      artifactStore: {
+        readArtifact: async () => ({
+          metadata: {
+            id: "finance-ledger-artifact",
+            label: "finance ledger",
+            sourceToolName: "read_file",
+            contentType: "text/plain",
+            createdAt: "2026-11-10T00:00:00.000Z",
+            charLength: artifactText.length,
+          },
+          text: artifactText,
+        }),
+        writeArtifact: async () => {
+          throw new Error("not used");
+        },
+      },
+    }).find((candidate) => candidate.name === AZHEN_FINANCE_QUERY_TOOL)!;
+
+    const result = await tool.execute("query", {
+      from: "2026-11-01",
+      to: "2026-11-30",
+      chart: "doughnut",
+    });
+    expect(result.isError).not.toBe(true);
+    expect((result.content[0] as { text: string }).text).toContain("支出 0.30 CNY");
+  });
+
   it("marks a missing month as partial and never presents a chart as complete", async () => {
     const app = new FakeApp();
     (app.vault as unknown as { configDir: string }).configDir = ".obsidian";

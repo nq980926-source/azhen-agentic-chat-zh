@@ -175,6 +175,7 @@ export class AgentRuntimeResourceState {
               getSettings: this.options.getSettings,
               getMcpTools: () => this.resources.mcpTools,
               getTurnContext: this.options.getAzhenFinanceTurnContext,
+              artifactStore: this.options.artifactStore,
             })
           : undefined,
     });
