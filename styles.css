@@ -196,6 +196,16 @@
   border-collapse: collapse;
 }
 
+.agentic-chat-text .block-language-advanced-chart {
+  min-width: 0;
+  height: clamp(220px, 34vh, 360px);
+  margin-block: var(--size-4-2);
+}
+
+.agentic-chat-text .block-language-advanced-chart canvas {
+  max-width: 100%;
+}
+
 .agentic-chat-mermaid {
   overflow-x: auto;
 }
