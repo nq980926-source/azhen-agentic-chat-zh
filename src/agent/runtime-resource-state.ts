@@ -11,7 +11,7 @@ import type { AgentRole } from "./subagents";
 import {
   EMPTY_AGENT_RUNTIME_RESOURCES,
   buildAgentParentTools,
-  composeAgentSystemPrompt,
+  composeCurrentAgentSystemPrompt,
   loadAgentRuntimeResources,
   type AgentRuntimeResources,
 } from "./runtime-resources";
@@ -127,7 +127,7 @@ export class AgentRuntimeResourceState {
   }
 
   composeSystemPrompt(settings: AgenticChatSettings, activeModelId: string): string {
-    return composeAgentSystemPrompt(
+    return composeCurrentAgentSystemPrompt(
       settings,
       this.resources,
       this.selfAwarenessOverlay(activeModelId),

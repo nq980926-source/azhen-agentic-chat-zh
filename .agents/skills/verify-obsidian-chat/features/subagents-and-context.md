@@ -14,6 +14,8 @@
 - Context handling: serialization, attachment budgets, ignore-list withholding,
   context chips, context-window bar, and source chips. See
   [Open and compose](./open-and-compose.md) for the attachment entry points.
+- Per-request local date, weekday, time, IANA time zone, yesterday/tomorrow, and
+  Monday-Sunday week context for parent and subagent prompts.
 
 ## How to get to it (user view)
 
@@ -62,6 +64,7 @@ await $(".agentic-chat-action-list").waitForExist();
 | `showFolderMenu()` | `src/ui/working-directory-workflow-controller.ts:22` | only a unit test calls it; no production caller | `unreachable` |
 | `attachFolderMenuItems()` | `src/ui/working-directory-workflow-controller.ts:48` | no caller in `src/` or `test/` | `unreachable` |
 | Context-window bar | `src/ui/chat-view.ts:813` | `test/e2e/specs/smoke.e2e.ts:179` (existence only) | `partial` |
+| Runtime date context in parent and subagent prompts | `src/agent/runtime-date-context.ts:129`; `src/agent/runtime-resource-state.ts:129`; `src/agent/subagent-runtime.ts:97` | `test/runtime-date-context.test.ts:138`; `test/subagent-runtime.test.ts:159` (unit only) | `partial` |
 
 ## Gotchas
 

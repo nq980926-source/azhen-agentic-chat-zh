@@ -16,6 +16,7 @@ import { ReadMemo } from "../vault/read-memo";
 import { resolveModePolicy } from "./modes";
 import type { AgentRuntimeResources } from "./runtime-resources";
 import type { AgentRole } from "./subagents";
+import { buildRuntimeDateContext } from "./runtime-date-context";
 import type { AfterToolCallContext, AgentToolCallController, BeforeToolCallContext } from "./tool-call-controller";
 
 export interface SubagentRuntimeOptions {
@@ -93,7 +94,7 @@ export class AgentSubagentRuntime {
     return new Agent({
       streamFn: this.buildStreamFn(),
       initialState: {
-        systemPrompt: profile.systemPrompt,
+        systemPrompt: `${profile.systemPrompt.trim()}\n\n${buildRuntimeDateContext()}`,
         model: buildModel(childModelConfig(settings, profile.model)),
         thinkingLevel: settings.thinkingLevel,
         tools,

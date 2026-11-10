@@ -155,7 +155,8 @@ describe("AgentSubagentRuntime", () => {
 
     const child = runtime.createChildAgent(PROFILE);
 
-    expect(child.state.systemPrompt).toBe("child prompt");
+    expect(child.state.systemPrompt).toContain("child prompt");
+    expect(child.state.systemPrompt).toContain("## Runtime date context (authoritative for relative dates)");
     expect(child.state.model.id).toBe("child/model");
     expect(child.state.tools.map((tool) => tool.name).sort()).toEqual(["read"]);
   });

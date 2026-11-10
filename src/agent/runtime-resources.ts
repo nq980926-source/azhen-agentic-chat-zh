@@ -29,6 +29,7 @@ import { type IgnoreMatcher } from "../vault/ignore";
 import { createFileSystemDenyMatcher } from "../vault/file-system-sandbox";
 import type { ReadMemo } from "../vault/read-memo";
 import { formatInstructionsOverlay, loadVaultInstructions } from "./instructions";
+import { buildRuntimeDateContext } from "./runtime-date-context";
 import {
   AZHEN_KNOWLEDGE_PROMPT_OVERLAY,
   hasEnabledAzhenKnowledgeMcp,
@@ -151,9 +152,11 @@ export function composeAgentSystemPrompt(
   selfAwarenessOverlay: string,
   skillLoads?: SkillLoadRegistry,
   longTermMemoryOverlay?: string,
+  runtimeDateContext = "",
 ): string {
   const overlays = [
     selfAwarenessOverlay,
+    runtimeDateContext,
     hasEnabledAzhenKnowledgeMcp(settings) ? AZHEN_KNOWLEDGE_PROMPT_OVERLAY : "",
     longTermMemoryOverlay ?? "",
     resources.instructionsOverlay,
@@ -164,6 +167,23 @@ export function composeAgentSystemPrompt(
     formatLoadedSkillsOverlay(resources.skills, skillLoads),
   ];
   return buildSystemPrompt(settings.systemPrompt, resources.skills, overlays);
+}
+
+export function composeCurrentAgentSystemPrompt(
+  settings: AgenticChatSettings,
+  resources: AgentRuntimeResources,
+  selfAwarenessOverlay: string,
+  skillLoads?: SkillLoadRegistry,
+  longTermMemoryOverlay?: string,
+): string {
+  return composeAgentSystemPrompt(
+    settings,
+    resources,
+    selfAwarenessOverlay,
+    skillLoads,
+    longTermMemoryOverlay,
+    buildRuntimeDateContext(),
+  );
 }
 
 const MAX_LOADED_SKILLS_CHARS = 16_000;
