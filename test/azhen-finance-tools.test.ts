@@ -107,11 +107,11 @@ describe("azhen finance query tool", () => {
       0,
     );
     const details = result.details as {
-      fact: { expense: string; categories: Array<{ amount: string }> };
+      fact: { expense: string; purposes: Array<{ amount: string }> };
     };
     expect(chartTotal).toBe(Number(details.fact.expense));
     expect(
-      details.fact.categories.reduce((sum, item) => sum + BigInt(item.amount), 0n),
+      details.fact.purposes.reduce((sum, item) => sum + BigInt(item.amount), 0n),
     ).toBe(BigInt(details.fact.expense));
   });
 
@@ -180,9 +180,11 @@ describe("azhen finance query tool", () => {
     const chartJson = /```advanced-chart\n([\s\S]*?)\n```/.exec(output.text)?.[1];
     const chart = JSON.parse(chartJson!);
     expect(chart.data.labels).toEqual(["2026-10", "2026-11"]);
-    expect(chart.data.datasets[0]).toEqual({
+    expect(chart.data.datasets[0]).toMatchObject({
       label: "月度支出",
       data: [1.25, 6.25],
+      backgroundColor: "#4c78a8",
+      borderColor: "#2f5d8a",
     });
     const details = result.details as {
       fact: { monthSeries: Array<{ month: string; amount: string }> };
@@ -286,6 +288,50 @@ describe("azhen finance query tool", () => {
     expect(text).toContain("账本覆盖不完整");
     expect(text).not.toContain("```advanced-chart");
     expect(result.details?.missing).toEqual(["生活/记账/账本/2026-10.md"]);
+  });
+
+  it("downgrades a crowded doughnut request to a purpose-labelled horizontal bar", async () => {
+    const app = new FakeApp();
+    (app.vault as unknown as { configDir: string }).configDir = ".obsidian";
+    (app as unknown as { plugins: unknown }).plugins = {
+      enabledPlugins: new Set(["obsidian-charts"]),
+      plugins: { "obsidian-charts": {} },
+    };
+    const manyPurposeLedger = [
+      "日期｜用途｜金额｜来源",
+      ...Array.from(
+        { length: 22 },
+        (_, index) =>
+          `2026-11-${String((index % 9) + 1).padStart(2, "0")}｜用途${String(index + 1).padStart(2, "0")}｜1.00｜每日额度`,
+      ),
+    ].join("\n");
+    const files = new Map([
+      ["生活/记账/用户财务档案.md", "# 财务档案\n\n- 项目制已取消\n"],
+      ["生活/记账/账本/2026-11.md", manyPurposeLedger],
+    ]);
+    const tool = createAzhenFinanceTools({
+      app: app as never,
+      getSettings: settings,
+      getMcpTools: () => [readTool(files)],
+      getTurnContext: () => context("看看本月钱都花在哪里，按分类占比展示"),
+    }).find((candidate) => candidate.name === AZHEN_FINANCE_QUERY_TOOL)!;
+
+    const result = await tool.execute("query", {
+      from: "2026-11-01",
+      to: "2026-11-30",
+      chart: "doughnut",
+    });
+    const text = (result.content[0] as { text: string }).text;
+    const chartJson = /```advanced-chart\n([\s\S]*?)\n```/.exec(text)?.[1];
+    const chart = JSON.parse(chartJson!);
+    expect(text).toContain("支出用途");
+    expect(text).toContain("账本未提供可核实的大类映射");
+    expect(text).not.toContain("支出分类：");
+    expect(chart.type).toBe("bar");
+    expect(chart.options.indexAxis).toBe("y");
+    expect(chart.data.labels).toHaveLength(22);
+    expect(result.details?.chartType).toBe("bar");
+    expect(result.details?.chartRequested).toBe("doughnut");
   });
 
   it("rejects a mismatched read hash instead of returning a trusted total", async () => {

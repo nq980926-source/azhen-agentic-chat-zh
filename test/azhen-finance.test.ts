@@ -3,6 +3,7 @@ import {
   buildFinanceChart,
   buildFinanceFact,
   financeMonthsInRange,
+  financeFactMarkdown,
   formatMinor,
   normalizeFinanceDate,
   parseAmountToMinor,
@@ -102,7 +103,7 @@ describe("Azhen finance deterministic core", () => {
     expect(fact.coverage).toBe("complete");
     expect(fact.transactionCount).toBe(37);
     expect(fact.expenseMinor).toBe(
-      fact.categories.reduce((sum, category) => sum + category.amountMinor, 0n),
+      fact.purposes.reduce((sum, purpose) => sum + purpose.amountMinor, 0n),
     );
     expect(fact.incomeMinor).toBe(10000n);
     expect(fact.transferMinor).toBe(6000n);
@@ -116,9 +117,14 @@ describe("Azhen finance deterministic core", () => {
     ]);
   });
 
-  it("generates valid Charts JSON from the same fact and rejects incomplete coverage", () => {
+  it("generates colored Charts JSON from the same fact and rejects incomplete coverage", () => {
     const fact = buildFinanceFact({
-      ledgerText: ledger,
+      ledgerText: [
+        "日期｜用途｜金额｜来源",
+        "2026-11-01｜早餐｜0.10｜每日额度",
+        "2026-11-01｜午餐｜0.20｜每日额度",
+        "2026-11-02｜工资｜100.00｜新增入账",
+      ].join("\n"),
       from: "2026-11-01",
       to: "2026-11-30",
       sourcePath: "生活/记账/账本/2026-11.md",
@@ -127,17 +133,27 @@ describe("Azhen finance deterministic core", () => {
     });
     const doughnut = buildFinanceChart(fact, "doughnut");
     expect(doughnut?.type).toBe("doughnut");
-    expect(doughnut?.data.labels).toEqual(fact.categories.map((item) => item.category));
+    expect(doughnut?.data.labels).toEqual(fact.purposes.map((item) => item.purpose));
     expect(doughnut?.data.datasets[0]?.data).toEqual(
-      fact.categories.map((item) => Number(item.amountMinor) / 100),
+      fact.purposes.map((item) => Number(item.amountMinor) / 100),
     );
+    expect(doughnut?.data.datasets[0]?.backgroundColor).toHaveLength(2);
+    expect(doughnut?.data.datasets[0]?.borderColor).toHaveLength(2);
+    expect(doughnut?.data.datasets[0]?.borderColor).toEqual(
+      doughnut?.data.datasets[0]?.backgroundColor,
+    );
+    expect(doughnut?.data.datasets[0]?.backgroundColor).not.toContain("#ffffff");
 
     const bar = buildFinanceChart(fact, "bar");
     expect(bar?.type).toBe("bar");
-    expect(bar?.data.labels).toEqual(fact.categories.map((item) => item.category));
+    expect(bar?.data.labels).toEqual(fact.purposes.map((item) => item.purpose));
+    expect(bar?.data.datasets[0]?.backgroundColor).toBeTruthy();
     const line = buildFinanceChart(fact, "line");
     expect(line?.type).toBe("line");
     expect(line?.data.datasets.map((dataset) => dataset.label)).toEqual(["支出", "收入"]);
+    expect(line?.data.datasets[0]?.borderColor).not.toBe(
+      line?.data.datasets[1]?.borderColor,
+    );
     expect(
       line?.data.datasets[0]?.data.reduce(
         (sum, value) => sum + Math.round(value * 100),
@@ -198,13 +214,55 @@ describe("Azhen finance deterministic core", () => {
     ]);
     const bar = buildFinanceChart(fact, "bar", "month");
     expect(bar?.data.labels).toEqual(["2026-11", "2026-12", "2027-01", "2027-02"]);
-    expect(bar?.data.datasets[0]).toEqual({
+    expect(bar?.data.datasets[0]).toMatchObject({
       label: "月度支出",
       data: [10, 0, 20, 0],
+      backgroundColor: "#4c78a8",
+      borderColor: "#2f5d8a",
     });
     const categoryBar = buildFinanceChart(fact, "bar", "category");
     expect(categoryBar?.data.labels).toEqual(["书", "餐费"]);
     expect(categoryBar?.data.datasets[0]?.data).toEqual([10, 20]);
+  });
+
+  it("keeps 22 raw purposes distinct and uses a readable horizontal bar instead of a crowded doughnut", () => {
+    const manyPurposes = buildFinanceFact({
+      ledgerText: [
+        "日期｜用途｜金额｜来源",
+        ...Array.from(
+          { length: 22 },
+          (_, index) =>
+            `2026-11-${String((index % 9) + 1).padStart(2, "0")}｜用途${String(index + 1).padStart(2, "0")}｜${index + 1}.00｜每日额度`,
+        ),
+      ].join("\n"),
+      from: "2026-11-01",
+      to: "2026-11-30",
+      sourcePath: "生活/记账/账本/2026-11.md",
+      sourceHash: "f".repeat(64),
+      coverage: "complete",
+    });
+
+    expect(manyPurposes.purposes).toHaveLength(22);
+    expect(manyPurposes.expenseMinor).toBe(
+      manyPurposes.purposes.reduce((sum, purpose) => sum + purpose.amountMinor, 0n),
+    );
+
+    const rendered = financeFactMarkdown(manyPurposes, "doughnut", "category");
+    expect(rendered.chart?.type).toBe("bar");
+    expect(rendered.chart?.options.indexAxis).toBe("y");
+    expect(rendered.chart?.data.labels).toHaveLength(22);
+    expect(
+      rendered.chart?.data.datasets[0]?.data.reduce(
+        (sum, value) => sum + Math.round(value * 100),
+        0,
+      ),
+    ).toBe(Number(manyPurposes.expenseMinor));
+    expect(rendered.markdown).toContain("支出用途");
+    expect(rendered.markdown).toContain(
+      `支出 ${formatMinor(manyPurposes.expenseMinor)} CNY`,
+    );
+    expect(rendered.markdown).toContain("账本未提供可核实的大类映射");
+    expect(rendered.markdown).not.toContain("支出分类");
   });
 
 });
