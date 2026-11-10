@@ -4,7 +4,7 @@
 
 - Read the existing Azhen monthly ledgers through Knowledge MCP.
 - Parse the current full-width `日期｜用途｜金额｜来源` format.
-- Compute income, expense, transfer, repayment, category and time-series totals.
+- Compute income, expense, transfer, repayment, raw purpose and time-series totals.
 - Build one `FinanceFact` shared by prose and Charts data.
 - Render `advanced-chart` Markdown through the installed Obsidian Charts plugin.
 
@@ -31,15 +31,17 @@ same Markdown shape produced by `azhen_finance_query`.
 
 | entry point | source | proof | status |
 |---|---|---|---|
-| Exact ledger parsing and `FinanceFact` | `src/finance/azhen-finance.ts:208`; `src/finance/azhen-finance.ts:274` | `test/azhen-finance.test.ts:38` (unit only; live-vault shape checked separately) | `partial` |
-| Finance query tool and chart payload | `src/tools/azhen-finance-tools.ts:67`; `src/tools/azhen-finance-tools.ts:87` | `test/azhen-finance-tools.test.ts:75` (unit only) | `partial` |
-| Charts Markdown in chat | `src/ui/assistant-bubble.ts:717` | `test/e2e/specs/finance-charts.e2e.ts:176` | `covered` |
+| Exact ledger parsing and `FinanceFact` | `src/finance/azhen-finance.ts:239`; `src/finance/azhen-finance.ts:311` | `test/azhen-finance.test.ts:90`; 22-purpose fallback at `test/azhen-finance.test.ts:225` | `covered` |
+| Finance query tool and chart payload | `src/tools/azhen-finance-tools.ts:67`; `src/tools/azhen-finance-tools.ts:87` | `test/azhen-finance-tools.test.ts:74`; crowded-chart fallback at `test/azhen-finance-tools.test.ts:293` | `covered` |
+| Charts Markdown in chat | `src/ui/assistant-bubble.ts:717` | `test/e2e/specs/finance-charts.e2e.ts:231` | `covered` |
 
 ## Gotchas
 
 - Charts must be installed and enabled before the finance query tool emits a
   chart block.
 - `advanced-chart` takes Chart.js JSON, not YAML.
+- `advanced-chart` bypasses Charts' YAML color preparation, so finance datasets must carry explicit background and border colors.
+- The ledger provides raw purposes, not a verified category mapping; more than eight purposes fall back from doughnut to a horizontal bar.
 - Missing ledger months produce partial coverage and no chart.
 - Large MCP receipts are read back through the existing artifact store.
 - Mermaid is not a fallback for this flow.

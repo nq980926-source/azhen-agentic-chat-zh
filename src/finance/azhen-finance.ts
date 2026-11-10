@@ -44,8 +44,8 @@ export interface FinanceFactSource {
   sha256: string;
 }
 
-export interface FinanceCategoryTotal {
-  category: string;
+export interface FinancePurposeTotal {
+  purpose: string;
   amountMinor: bigint;
 }
 
@@ -68,7 +68,7 @@ export interface FinanceFact {
   transferMinor: bigint;
   repaymentMinor: bigint;
   transactionCount: number;
-  categories: FinanceCategoryTotal[];
+  purposes: FinancePurposeTotal[];
   timeSeries: FinanceTimePoint[];
   monthSeries: FinanceMonthPoint[];
   unit: "CNY";
@@ -85,14 +85,29 @@ export interface FinanceChartConfig {
     datasets: Array<{
       label: string;
       data: number[];
+      backgroundColor: string | string[];
+      borderColor: string | string[];
+      borderWidth: number;
+      hoverOffset?: number;
+      tension?: number;
+      pointBackgroundColor?: string | string[];
+      pointBorderColor?: string | string[];
+      pointRadius?: number;
     }>;
   };
   options: {
     responsive: true;
     maintainAspectRatio: false;
+    indexAxis?: "x" | "y";
     plugins?: {
       legend?: {
         position?: "top" | "bottom" | "left" | "right";
+        labels?: {
+          usePointStyle?: boolean;
+          boxWidth?: number;
+          boxHeight?: number;
+          padding?: number;
+        };
       };
       title?: {
         display: true;
@@ -102,6 +117,22 @@ export interface FinanceChartConfig {
     scales?: Record<string, unknown>;
   };
 }
+
+const MAX_DOUGHNUT_SEGMENTS = 8;
+const DOUGHNUT_COLORS = [
+  "#e45756",
+  "#4c78a8",
+  "#eeca3b",
+  "#59a14f",
+  "#b07aa1",
+  "#f28e2b",
+  "#76b7b2",
+  "#9c755f",
+] as const;
+const BAR_COLOR = "#4c78a8";
+const BAR_BORDER_COLOR = "#2f5d8a";
+const EXPENSE_LINE_COLOR = "#e45756";
+const INCOME_LINE_COLOR = "#59a14f";
 
 export interface FinanceCalendarTargets {
   iso: string;
@@ -292,7 +323,7 @@ export function buildFinanceFactFromSources(options: {
   let transferMinor = 0n;
   let repaymentMinor = 0n;
   let transactionCount = 0;
-  const categories = new Map<string, bigint>();
+  const purposes = new Map<string, bigint>();
   const timeSeries = new Map<string, { expenseMinor: bigint; incomeMinor: bigint }>();
   const monthSeries = new Map(financeMonthsInRange(from, to).map((month) => [month, 0n]));
   let partial = options.coverage === "partial";
@@ -305,7 +336,7 @@ export function buildFinanceFactFromSources(options: {
       transactionCount += 1;
       if (row.kind === "expense" || row.kind === "credit_expense") {
         expenseMinor += row.amountMinor;
-        categories.set(row.purpose, (categories.get(row.purpose) ?? 0n) + row.amountMinor);
+        purposes.set(row.purpose, (purposes.get(row.purpose) ?? 0n) + row.amountMinor);
         const day = timeSeries.get(row.date) ?? { expenseMinor: 0n, incomeMinor: 0n };
         day.expenseMinor += row.amountMinor;
         timeSeries.set(row.date, day);
@@ -326,9 +357,9 @@ export function buildFinanceFactFromSources(options: {
     }
   }
 
-  const categoryRows = [...categories.entries()]
-    .map(([category, amountMinor]) => ({ category, amountMinor }))
-    .sort((a, b) => compareText(a.category, b.category));
+  const purposeRows = [...purposes.entries()]
+    .map(([purpose, amountMinor]) => ({ purpose, amountMinor }))
+    .sort((a, b) => compareText(a.purpose, b.purpose));
   const timeRows = [...timeSeries.entries()]
     .map(([date, amounts]) => ({ date, ...amounts }))
     .sort((a, b) => compareText(a.date, b.date));
@@ -347,7 +378,7 @@ export function buildFinanceFactFromSources(options: {
     transferMinor,
     repaymentMinor,
     transactionCount,
-    categories: categoryRows,
+    purposes: purposeRows,
     timeSeries: timeRows,
     monthSeries: monthRows,
     unit: "CNY",
@@ -368,10 +399,15 @@ function compareText(left: string, right: string): number {
  */
 export function buildFinanceChart(
   fact: FinanceFact,
-  type: FinanceChartConfig["type"],
+  requestedType: FinanceChartConfig["type"],
   barDimension: "month" | "category" = fact.monthSeries.length > 1 ? "month" : "category",
 ): FinanceChartConfig | null {
   if (fact.coverage !== "complete") return null;
+  const type =
+    (requestedType === "pie" || requestedType === "doughnut") &&
+    fact.purposes.length > MAX_DOUGHNUT_SEGMENTS
+      ? "bar"
+      : requestedType;
   const numberFromMinor = (minor: bigint): number | null => {
     if (minor > BigInt(Number.MAX_SAFE_INTEGER)) return null;
     return Number(minor) / 100;
@@ -387,8 +423,28 @@ export function buildFinanceChart(
       data: {
         labels: fact.timeSeries.map((item) => item.date),
         datasets: [
-          { label: "支出", data: expense as number[] },
-          { label: "收入", data: income as number[] },
+          {
+            label: "支出",
+            data: expense as number[],
+            backgroundColor: "rgba(228, 87, 86, 0.12)",
+            borderColor: EXPENSE_LINE_COLOR,
+            borderWidth: 2,
+            tension: 0.25,
+            pointBackgroundColor: EXPENSE_LINE_COLOR,
+            pointBorderColor: EXPENSE_LINE_COLOR,
+            pointRadius: 3,
+          },
+          {
+            label: "收入",
+            data: income as number[],
+            backgroundColor: "rgba(89, 161, 79, 0.12)",
+            borderColor: INCOME_LINE_COLOR,
+            borderWidth: 2,
+            tension: 0.25,
+            pointBackgroundColor: INCOME_LINE_COLOR,
+            pointBorderColor: INCOME_LINE_COLOR,
+            pointRadius: 3,
+          },
         ],
       },
       options: {
@@ -409,58 +465,87 @@ export function buildFinanceChart(
   }
 
   if (fact.expenseMinor <= 0n) return null;
-  const categoryTotal = fact.categories.reduce((sum, item) => sum + item.amountMinor, 0n);
-  if (categoryTotal !== fact.expenseMinor) return null;
-  const title = `${fact.from} 至 ${fact.to} 支出`;
+  const purposeTotal = fact.purposes.reduce((sum, item) => sum + item.amountMinor, 0n);
+  if (purposeTotal !== fact.expenseMinor) return null;
+  const composition = barDimension === "category" || type === "pie" || type === "doughnut";
+  const title = `${fact.from} 至 ${fact.to} 支出${composition ? "用途" : ""}`;
 
   if (type === "pie" || type === "doughnut") {
-    const values = fact.categories.map((item) => numberFromMinor(item.amountMinor));
+    const values = fact.purposes.map((item) => numberFromMinor(item.amountMinor));
     if (values.some((value) => value == null)) return null;
+    const colors = fact.purposes.map((_, index) => DOUGHNUT_COLORS[index]!);
     return {
       type,
       data: {
-        labels: fact.categories.map((item) => item.category),
-        datasets: [{ label: "支出", data: values as number[] }],
+        labels: fact.purposes.map((item) => item.purpose),
+        datasets: [{
+          label: "支出用途",
+          data: values as number[],
+          backgroundColor: colors,
+          borderColor: colors,
+          borderWidth: 1,
+          hoverOffset: 4,
+        }],
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
         plugins: {
-          legend: { position: "bottom" },
+          legend: {
+            position: "bottom",
+            labels: {
+              usePointStyle: true,
+              boxWidth: 10,
+              boxHeight: 10,
+              padding: 12,
+            },
+          },
           title: { display: true, text: title },
         },
       },
     };
   }
 
-  const points = barDimension === "month" ? fact.monthSeries : fact.categories;
+  const points = barDimension === "month" ? fact.monthSeries : fact.purposes;
   if (points.length === 0) return null;
   const values = points.map((item) => numberFromMinor(item.amountMinor));
   if (values.some((value) => value == null)) return null;
+  const horizontal = barDimension === "category" && points.length > MAX_DOUGHNUT_SEGMENTS;
   return {
     type,
     data: {
       labels: points.map((item) =>
-        "category" in item ? item.category : item.month,
+        "purpose" in item ? item.purpose : item.month,
       ),
       datasets: [{
-        label: type === "bar" && barDimension === "month" ? "月度支出" : "支出",
+        label: barDimension === "month" ? "月度支出" : "支出用途",
         data: values as number[],
+        backgroundColor: BAR_COLOR,
+        borderColor: BAR_BORDER_COLOR,
+        borderWidth: 1,
       }],
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
+      indexAxis: horizontal ? "y" : "x",
       plugins: {
         legend: { position: "top" },
         title: { display: true, text: title },
       },
-      scales: {
-        y: {
-          beginAtZero: true,
-          title: { display: true, text: "CNY" },
-        },
-      },
+      scales: horizontal
+        ? {
+            x: {
+              beginAtZero: true,
+              title: { display: true, text: "CNY" },
+            },
+          }
+        : {
+            y: {
+              beginAtZero: true,
+              title: { display: true, text: "CNY" },
+            },
+          },
     },
   };
 }
@@ -480,7 +565,7 @@ export async function sealFinanceFact(fact: FinanceFact): Promise<FinanceFact> {
     transferMinor: fact.transferMinor.toString(),
     repaymentMinor: fact.repaymentMinor.toString(),
     transactionCount: fact.transactionCount,
-    categories: fact.categories.map((row) => [row.category, row.amountMinor.toString()]),
+    purposes: fact.purposes.map((row) => [row.purpose, row.amountMinor.toString()]),
     timeSeries: fact.timeSeries.map((row) => [
       row.date,
       row.expenseMinor.toString(),
@@ -517,10 +602,13 @@ export function financeFactMarkdown(
   } else {
     lines.push(`数据覆盖完整；来源版本 ${fact.contentHash.slice(0, 12)}。`);
   }
-  if (fact.categories.length > 0) {
-    lines.push("", "支出分类：");
-    for (const category of fact.categories) {
-      lines.push(`- ${category.category}：${formatMinor(category.amountMinor)} ${fact.unit}`);
+  if (fact.purposes.length > 0) {
+    lines.push(
+      "",
+      "支出用途（账本未提供可核实的大类映射，以下按流水“用途”原字段汇总）：",
+    );
+    for (const purpose of fact.purposes) {
+      lines.push(`- ${purpose.purpose}：${formatMinor(purpose.amountMinor)} ${fact.unit}`);
     }
   }
   if (fact.monthSeries.length > 1) {

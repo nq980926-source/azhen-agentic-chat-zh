@@ -72,7 +72,7 @@ export function createAzhenFinanceTools(options: AzhenFinanceToolOptions): Agent
     label: "核验财务统计",
     description:
       "Read the actual Azhen monthly ledger through the configured Knowledge MCP and compute one exact FinanceFact. " +
-      "Use for income, spending, category, date-range and trend questions. Return the provided Markdown verbatim. " +
+      "Use for income, spending, purpose totals, date-range and trend questions. Return the provided Markdown verbatim. " +
       "Never calculate totals yourself and never supply chart values.",
     parameters: QuerySchema,
     executionMode: "sequential",
@@ -144,7 +144,7 @@ export class AzhenFinanceRuntime {
         details: {
           kind: "azhen-finance-fact",
           fact: publicFact(fact),
-          chartType: chartRendered ? requested : "none",
+          chartType: chartRendered ? rendered.chart?.type ?? "none" : "none",
           chartRequested: requested,
           chartAvailable,
           missing,
@@ -285,7 +285,7 @@ function chooseChart(
   if (requested !== "auto") return requested;
   if (/趋势|变化/.test(request)) return "line";
   if (/对比|比较|各月|月份/.test(request)) return "bar";
-  if (/哪里|分布|占比|分类/.test(request) && fact.categories.length > 1) return "doughnut";
+  if (/哪里|分布|占比|分类/.test(request) && fact.purposes.length > 1) return "doughnut";
   return "none";
 }
 
@@ -332,8 +332,8 @@ function publicFact(fact: FinanceFact): Record<string, unknown> {
     expense: fact.expenseMinor.toString(),
     transfer: fact.transferMinor.toString(),
     repayment: fact.repaymentMinor.toString(),
-    categories: fact.categories.map((item) => ({
-      category: item.category,
+    purposes: fact.purposes.map((item) => ({
+      purpose: item.purpose,
       amount: item.amountMinor.toString(),
     })),
     timeSeries: fact.timeSeries.map((item) => ({
