@@ -59,7 +59,7 @@ await browser.waitUntil(async () =>
 | Tool-step vault path link | `src/ui/assistant-bubble.ts:397` | no committed check | `NONE` |
 | Stop the active turn (toolbar) | `src/ui/chat-view.ts:827` | `test/e2e/specs/skill-chip.e2e.ts:48` (click only) | `partial` |
 | Stop clears queued steering and follow-ups | `src/agent/agent-service.ts:711` | `test/agent-service.test.ts:1671` | `partial` |
-| `/compact` skips when the session changed | `src/agent/agent-service.ts:562` | `test/agent-service.test.ts:1030` | `partial` |
+| `/compact` skips when the session changed | `src/agent/agent-service.ts:597` | `test/agent-service.test.ts:1030` | `partial` |
 | Compaction recovery stops the next prompt | `src/agent/prompt-turn-runtime.ts:64` | `test/agent-service.test.ts:1107` | `partial` |
 | Queue a plain message | `src/ui/chat-view.ts:1329` | `test/e2e/specs/approval-deterministic.e2e.ts:456` | `covered` |
 | `/steer` | `src/ui/chat-view.ts:1792` | `test/e2e/specs/approval-deterministic.e2e.ts:491` | `covered` |

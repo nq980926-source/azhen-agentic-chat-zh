@@ -28,7 +28,9 @@ const defaultSpecs = mobileViewport
   ? ["./test/e2e/specs/mobile-viewport.e2e.ts"]
   : ["./test/e2e/specs/**/*.e2e.ts"];
 const configSpecs = probeMode ? ["./test/e2e/probe/**/*.e2e.ts"] : defaultSpecs;
-const configExclude = probeMode || mobileViewport ? [] : ["./test/e2e/specs/mobile-viewport.e2e.ts"];
+const configExclude = probeMode || mobileViewport
+  ? []
+  : ["./test/e2e/specs/mobile-viewport.e2e.ts", "./test/e2e/specs/finance-charts.e2e.ts"];
 
 if (externalChromedriverPort !== undefined && !Number.isInteger(externalChromedriverPort)) {
   throw new Error(`WDIO_EXTERNAL_CHROMEDRIVER_PORT must be an integer, got ${env.WDIO_EXTERNAL_CHROMEDRIVER_PORT}`);

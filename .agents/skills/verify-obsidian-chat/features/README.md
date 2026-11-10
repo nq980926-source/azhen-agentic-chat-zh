@@ -1,7 +1,7 @@
 # Feature map
 
 This directory maps every user path into Agentic Chat to its committed proof. It
-is the audit index for [SKILL.md](../SKILL.md). The map has eight journey files.
+is the audit index for [SKILL.md](../SKILL.md). The map has nine journey files.
 Each one keeps the same five sections, in this order:
 
 1. `## Sub-features`
@@ -22,6 +22,7 @@ Each one keeps the same five sections, in this order:
 | [Settings](./settings.md) | All eight settings tabs, secrets, conditional fields, plugin rows. |
 | [MCP and OAuth](./mcp-and-oauth.md) | MCP servers, auth modes, OAuth sign-in, tool discovery, plugin-provided MCP. |
 | [Subagents and context](./subagents-and-context.md) | `/agent`, the `subagent` tool, child status and stop, context serialization and budgets. |
+| [Finance and Charts](./finance-and-charts.md) | Exact ledger parsing, `FinanceFact`, and Charts Markdown rendered inside assistant messages. |
 
 ## Shared preconditions
 

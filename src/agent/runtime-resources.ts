@@ -264,6 +264,8 @@ export function buildAgentParentTools(options: {
   azhenMemoryTools?: AgentTool[];
   /** Cloud Memory is the only automatic long-term-memory path for this runtime. */
   azhenMemoryEnabled?: boolean;
+  /** Finance-specific deterministic query tools. */
+  azhenFinanceTools?: AgentTool[];
 }): { tools: AgentTool[]; toolBudget: ToolBudgetSnapshot } {
   const tools = [
     ...createVaultTools(options.app, options.resources.ignoreMatcher, options.readMemo),
@@ -273,6 +275,7 @@ export function buildAgentParentTools(options: {
     ...createWebTools(options.settings.web, options.webFetch, options.artifactStore),
     ...createToolArtifactTools(options.artifactStore),
     ...(options.azhenMemoryTools ?? []),
+    ...(options.azhenFinanceTools ?? []),
     ...options.resources.mcpTools,
     createReadSkillTool(options.resources.skills),
     createReadSkillFileTool(options.app, options.resources.skills),

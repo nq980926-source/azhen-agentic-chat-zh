@@ -214,6 +214,9 @@ export class AgentService {
         sessionId: this.sessions.info?.id,
         messages: this.getMessages(),
       }),
+      getAzhenFinanceTurnContext: () => ({
+        messages: this.getMessages(),
+      }),
     });
     this.subagents = new AgentSubagentRuntime({
       app: this.app,

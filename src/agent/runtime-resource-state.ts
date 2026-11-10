@@ -22,6 +22,10 @@ import {
   type AzhenMemoryTurnContext,
 } from "../integrations/azhen-memory";
 import {
+  createAzhenFinanceTools,
+  type AzhenFinanceTurnContext,
+} from "../tools/azhen-finance-tools";
+import {
   createToolBudgetState,
   DEFAULT_TOOL_BUDGET_SETTINGS,
   resetToolBudgetState,
@@ -43,6 +47,7 @@ export interface AgentRuntimeResourceStateOptions {
   skillScaffolder?: SkillScaffolder;
   azhenMemoryFetch?: typeof fetch;
   getAzhenMemoryTurnContext?: () => AzhenMemoryTurnContext;
+  getAzhenFinanceTurnContext?: () => AzhenFinanceTurnContext;
 }
 
 export class AgentRuntimeResourceState {
@@ -163,6 +168,15 @@ export class AgentRuntimeResourceState {
           ? this.azhenMemory.createTools(this.options.getAzhenMemoryTurnContext)
           : undefined,
       azhenMemoryEnabled: this.azhenMemory?.isConfigured() ?? false,
+      azhenFinanceTools:
+        this.options.getAzhenFinanceTurnContext
+          ? createAzhenFinanceTools({
+              app: this.options.app,
+              getSettings: this.options.getSettings,
+              getMcpTools: () => this.resources.mcpTools,
+              getTurnContext: this.options.getAzhenFinanceTurnContext,
+            })
+          : undefined,
     });
     this.toolBudgetSnapshot = result.toolBudget;
     return result.tools;
