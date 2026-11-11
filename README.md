@@ -1,6 +1,6 @@
 # 阿斟 · Agentic Chat 简体中文汉化版
 
-这是 Obsidian 插件 [Agentic Chat](https://github.com/tardigrde/obsidian-agentic-chat) 的**非官方简体中文汉化构建**，保留阿斟 Memory 聊天联动、Knowledge MCP、模型设置、工具审批和聊天历史能力。当前正式版本为 **0.51.19**，Windows 与 Android 使用同一组插件文件。
+这是 Obsidian 插件 [Agentic Chat](https://github.com/tardigrde/obsidian-agentic-chat) 的**非官方简体中文汉化构建**，保留阿斟 Memory 聊天联动、Knowledge MCP、模型设置、工具审批和聊天历史能力。当前正式版本为 **0.51.20**，Windows 与 Android 使用同一组插件文件。
 
 > 本项目并非 Agentic Chat 官方版本，与原作者无官方隶属关系。原项目作者为 [tardigrde](https://github.com/tardigrde)。
 
@@ -44,7 +44,7 @@
 
 ## 兼容与更新
 
-- 插件版本：`0.51.19`
+- 插件版本：`0.51.20`
 - 最低 Obsidian 版本：`1.11.4`
 - 同一个仓库中，汉化版与原版不能作为两个不同插件并存（两者 ID 相同）。
 - 安装后不要删除原有 `data.json`、`sessions/`、`artifacts/` 等数据。
@@ -72,3 +72,7 @@
 - `THIRD_PARTY_NOTICES.md`：上游第三方依赖与来源说明
 
 只发布插件运行产物；不包含聊天历史、API Key、真实 Memory 或私人 Obsidian 仓库数据。
+
+## 0.51.20 输入与图片
+
+移动端 Enter 换行，Windows Enter 发送、Shift+Enter 换行。工具栏“添加图片”通过系统选择器添加 PNG/JPEG/WebP/GIF，支持缩略图、移除和图文发送；最多 4 张、单张 10 MB、合计 20 MB。复用现有多模态模型与会话链路，非视觉模型明确拦截，发送失败保留草稿。Android 实机与真实服务识图仍待验收。详细限制和验证记录见 [发布说明](release/0.51.20/release-notes.md)。
