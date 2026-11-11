@@ -16,6 +16,7 @@ import type { AskUserRequest } from "../tools/ask-user-tool";
 import type { ToolApprovalRequest, UserApprovalChoice } from "../agent/tool-call-controller";
 import { applyRememberedApprovalChoice } from "../agent/approval-memory";
 import { ApprovalModal } from "./approval-modal";
+import { readLocalImage, type LocalImageAttachment } from "./local-images";
 import { isImagePath } from "./image-attachments";
 import { EXPORT_FOLDER, exportFileName, hasExportableTurns, sessionToMarkdown } from "../session/export";
 import { VIEW_TYPE_AGENT_CHAT } from "../constants";
@@ -50,7 +51,7 @@ import {
 } from "./autocomplete";
 import { AutocompleteMenu } from "./autocomplete-menu";
 import { parseDroppedVaultPath } from "./drag-drop";
-import { parseInlineInstruction, parseStreamingSteering, stripContextPreamble } from "./composer-input";
+import { preserveComposerKey, parseInlineInstruction, parseStreamingSteering, stripContextPreamble } from "./composer-input";
 import {
   buildModelPillState,
   buildTurnUsageChromeParts,
@@ -723,7 +724,7 @@ export class ChatView extends ItemView {
     const inputWrap = field.createDiv({ cls: "agentic-chat-input-wrap" });
     this.inputEl = inputWrap.createEl("textarea", {
       cls: "agentic-chat-input",
-      attr: { rows: Platform.isMobile ? "1" : "3", placeholder: t("chat.input.placeholder") },
+      attr: { rows: Platform.isMobile ? "1" : "3", enterkeyhint: Platform.isMobile ? "enter" : "send", placeholder: t("chat.input.placeholder") },
     });
     window.requestAnimationFrame(() => this.resizeInput());
     this.menu = new AutocompleteMenu(
@@ -732,6 +733,7 @@ export class ChatView extends ItemView {
       () => this.fieldEl,
     );
     this.inputEl.addEventListener("keydown", (event) => {
+      if (preserveComposerKey(event, Platform.isMobile)) return;
       if (this.menu.handleKey(event)) return;
       if (event.key === "Escape" && this.promptEdit.isEditing) {
         event.preventDefault();
@@ -786,6 +788,21 @@ export class ChatView extends ItemView {
     // Safe ↔ YOLO segmented toggle (+ sticky plan badge) on the right — design ref.
     const toolbar = field.createDiv({ cls: "agentic-chat-toolbar" });
     const toolbarLeft = toolbar.createDiv({ cls: "agentic-chat-toolbar-left" });
+
+    const imagePicker = toolbarLeft.createEl("input", {
+      attr: { type: "file", accept: "image/png,image/jpeg,image/webp,image/gif", multiple: "" },
+    });
+    imagePicker.hide();
+    const addImage = toolbarLeft.createEl("button", {
+      cls: "clickable-icon", attr: { type: "button", "aria-label": "添加图片", title: "添加图片" },
+    });
+    setIcon(addImage, "image-plus");
+    addImage.addEventListener("click", () => imagePicker.click());
+    imagePicker.addEventListener("change", () => {
+      const files = Array.from(imagePicker.files ?? []);
+      imagePicker.value = "";
+      void this.pickImages(files, this.activeTab);
+    });
 
     // Model + reasoning effort share ONE two-sided pill: model on the left, the
     // effort level value on the right (no "Effort" label — the value is enough).
@@ -1334,10 +1351,85 @@ export class ChatView extends ItemView {
 
   // --- submission + slash commands ---
 
+  private localImages = new WeakMap<ChatTab, LocalImageAttachment[]>();
+  private imageSendBusy = false;
+  private imageReads = 0;
+
+  private async pickImages(files: File[], tab: ChatTab): Promise<void> {
+    const pending = this.localImages.get(tab) ?? [];
+    this.localImages.set(tab, pending);
+    this.imageReads++;
+    for (const file of files) {
+      try {
+        const image = await readLocalImage(file);
+        const preview = new Image();
+        preview.src = `data:${image.mimeType};base64,${image.data}`;
+        try { await preview.decode(); } catch { throw new Error(`图片无法解码：${file.name}`); }
+        if (pending.some((item) => item.data === image.data)) continue;
+        if (pending.length >= 4) throw new Error("最多添加 4 张图片");
+        if (pending.reduce((sum, item) => sum + item.size, image.size) > 20 * 1024 * 1024) {
+          throw new Error("图片总大小不能超过 20 MB");
+        }
+        pending.push(image);
+      } catch (error) {
+        new Notice(error instanceof Error ? error.message : "图片读取失败");
+      }
+    }
+    this.imageReads--;
+    if (this.activeTab === tab) this.renderChips();
+  }
+
+  private async sendLocalImages(text: string): Promise<void> {
+    if (this.imageSendBusy) return;
+    if (this.imageReads) { new Notice("图片正在读取，请稍后发送"); return; }
+    const tab = this.activeTab;
+    const service = tab.service;
+    if (service.isStreaming() || service.isTurnInFlight()) {
+      new Notice("请等待当前回复结束后发送图片");
+      return;
+    }
+    if (!service.supportsImages()) {
+      new Notice("当前模型不支持图片，请手动选择支持视觉的模型");
+      return;
+    }
+    if (this.promptEdit.isEditing || text.startsWith("/") || text.startsWith("#")) {
+      new Notice("图片请作为普通新消息发送，可同时输入说明文字");
+      return;
+    }
+    const images = [...(this.localImages.get(tab) ?? [])];
+    this.imageSendBusy = true;
+    try {
+      const prepared = await this.preparePromptSend(tab, service, this.activeNoteCache,
+        this.contextCache, [...this.attachments], this.effectiveActiveNote(), text || "请分析这些图片。");
+      if (!prepared) return;
+      if (!service.supportsImages()) throw new Error("当前模型不支持图片");
+      await service.sendPrompt(prepared.prompt, [...prepared.images,
+        ...images.map(({ data, mimeType }): ImageContent => ({ type: "image", data, mimeType }))], prepared.sessionToken);
+      if (service.getError()) throw new Error(service.getError());
+      if (service.getSessionToken() !== prepared.sessionToken) throw new Error("会话已切换，图片草稿已保留");
+      if (service.getMessages().length <= prepared.messageCountBefore) throw new Error("图片消息未发送，草稿已保留");
+      const remaining = (this.localImages.get(tab) ?? []).filter((item) => !images.includes(item));
+      this.localImages.set(tab, remaining);
+      if (this.isLiveTab(tab)) {
+        if (this.inputEl.value.trim() === text) this.clearComposer();
+        this.renderTranscript(service.getMessages());
+        this.renderChips();
+      }
+    } catch (error) {
+      new Notice(`发送失败，文字和图片草稿已保留：${error instanceof Error ? error.message : "未知错误"}`);
+    } finally {
+      this.imageSendBusy = false;
+    }
+  }
+
   private async submit(): Promise<void> {
     this.cancelAutocomplete();
     this.menu.hide();
     const text = this.inputEl.value.trim();
+    if (this.localImages.get(this.activeTab)?.length) {
+      await this.sendLocalImages(text);
+      return;
+    }
     if (!text) return;
 
     const editIndex = this.promptEdit.index;
@@ -1820,8 +1912,16 @@ export class ChatView extends ItemView {
     const display = this.lastSentDisplay ?? stripContextPreamble(prompt);
     this.clearEmptyState();
     this.renderOutgoingUserMessage(display, []);
-    await service.sendPrompt(prompt);
+    const lastUser = [...service.getMessages()].reverse().find((message) => message.role === "user");
+    const images = lastUser?.role === "user" && Array.isArray(lastUser.content)
+      ? lastUser.content.filter((part): part is ImageContent => part.type === "image") : [];
+    if (images.length && !service.supportsImages()) {
+      new Notice("当前模型不支持图片，请手动选择支持视觉的模型");
+      return;
+    }
+    await service.sendPrompt(prompt, images);
     if (!this.isLiveTab(tab)) return;
+    if (images.length) this.renderTranscript(service.getMessages());
     this.showServiceError();
   }
 
@@ -2740,6 +2840,15 @@ export class ChatView extends ItemView {
         },
       },
     );
+    for (const image of this.localImages?.get(this.activeTab) ?? []) {
+      const chip = this.chipsEl.createDiv({ cls: "agentic-chat-local-image" });
+      chip.createEl("img", { attr: { src: `data:${image.mimeType};base64,${image.data}`, alt: image.name } });
+      const remove = chip.createEl("button", { text: "×", attr: { "aria-label": `移除 ${image.name}` } });
+      remove.addEventListener("click", () => {
+        this.localImages.set(this.activeTab, (this.localImages.get(this.activeTab) ?? []).filter((item) => item !== image));
+        this.renderChips();
+      });
+    }
     if (this.queuedPromptArmed) {
       const text = this.inputEl.value.trim();
       if (text) {
@@ -2826,7 +2935,7 @@ export class ChatView extends ItemView {
       } else if (message.role === "user") {
         // Hide the attachment <context> preamble so history reads like the
         // live transcript (which renders the user's text, not the prompt).
-        this.renderUserMessage(stripContextPreamble(messageText(message)), [], index);
+        this.renderUserMessage(stripContextPreamble(messageText(message)), [], index, {}, message);
         rendered += 1;
       } else if (message.role === "assistant") {
         this.renderAssistantMessage(message, toolResults, index === lastAssistant);
@@ -2884,6 +2993,7 @@ export class ChatView extends ItemView {
     attachments: ContextAttachment[],
     editIndex?: number,
     options: { forceScroll?: boolean } = {},
+    message?: AgentMessage,
   ): void {
     const el = this.messagesEl.createDiv({ cls: ["agentic-chat-message", "agentic-chat-user"] });
     if (attachments.length > 0) {
@@ -2893,6 +3003,15 @@ export class ChatView extends ItemView {
           : contextAttachmentLabel(entry),
       );
       el.createDiv({ cls: "agentic-chat-user-attachments", text: t("chat.status.attached", { items: labels.join(", ") }) });
+    }
+    if (message?.role === "user" && Array.isArray(message.content)) {
+      for (const part of message.content) {
+        if (part.type === "image" && /^image\/(png|jpeg|webp|gif)$/.test(part.mimeType)) {
+          el.createEl("img", { cls: "agentic-chat-sent-image", attr: {
+            src: `data:${part.mimeType};base64,${part.data}`, alt: "用户发送的图片", loading: "lazy",
+          } });
+        }
+      }
     }
     el.createDiv({ cls: "agentic-chat-user-text", text });
     // Persisted turns are editable: click to reload the prompt and rewrite it.
@@ -2904,6 +3023,10 @@ export class ChatView extends ItemView {
         // copying); a selection elsewhere on the page shouldn't block editing.
         const selection = window.getSelection();
         if (selection?.toString() && selection.anchorNode && el.contains(selection.anchorNode)) return;
+        if (message?.role === "user" && Array.isArray(message.content) && message.content.some((part) => part.type === "image")) {
+          new Notice("图片消息请使用重试按钮，或重新选择图片发送新消息");
+          return;
+        }
         this.beginEdit(editIndex, stripContextPreamble(text), el);
       });
     }
@@ -2941,7 +3064,7 @@ export class ChatView extends ItemView {
       case "message_end":
         if (event.message.role === "user") {
           if (this.locallyRenderedUserMessages > 0) this.locallyRenderedUserMessages -= 1;
-          else this.renderUserMessage(stripContextPreamble(messageText(event.message)), []);
+          else this.renderUserMessage(stripContextPreamble(messageText(event.message)), [], undefined, {}, event.message);
         }
         if (event.message.role === "assistant") this.finalizeBubble(event.message);
         break;

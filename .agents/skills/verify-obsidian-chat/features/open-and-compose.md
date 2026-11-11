@@ -93,3 +93,12 @@ await $(".agentic-chat-send").click();
 - Quick Ask applies a deterministic text transform. It is not a model call.
 - The folder attachment picker is reachable only from the unused folder menu.
   Do not claim that users can reach it.
+
+## 0.51.20 local images and mobile Enter (2026-11-12)
+
+- Mobile Enter bypasses autocomplete and submit; desktop Enter/Shift+Enter retained.
+- Toolbar image button opens native file input (PNG/JPEG/WebP/GIF, multiple).
+- Four images, 10 MB each, 20 MB total; signature and browser decode validation.
+- Preview/remove and byte deduplication are local; sending reuses ImageContent and AgentService.
+- `test/local-images.test.ts`: encoding, validation, service wiring, vision guard, draft retention, keyboard gate (unit).
+- Native Windows picker, Android picker/IME and live provider recognition remain unverified.

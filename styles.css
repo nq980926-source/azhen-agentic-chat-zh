@@ -2451,3 +2451,7 @@ body.is-phone .agentic-chat-stop {
 body.is-phone .agentic-chat-field {
   min-height: 0;
 }
+
+.agentic-chat-local-image { display: inline-flex; align-items: center; gap: 4px; }
+.agentic-chat-local-image img { width: 48px; height: 48px; object-fit: cover; border-radius: 4px; }
+.agentic-chat-sent-image { display: block; max-width: 100%; max-height: 280px; object-fit: contain; margin: 4px 0; }

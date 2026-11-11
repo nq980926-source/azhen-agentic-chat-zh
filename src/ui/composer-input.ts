@@ -22,3 +22,8 @@ export function parseInlineInstruction(input: string): string | null {
   if (!trimmed.startsWith("#")) return null;
   return trimmed.slice(1).trim() || null;
 }
+
+/** Let the native textarea and IME handle these keys before autocomplete/send. */
+export function preserveComposerKey(event: Pick<KeyboardEvent, "key" | "isComposing" | "keyCode">, mobile: boolean): boolean {
+  return event.isComposing || event.keyCode === 229 || (mobile && event.key === "Enter");
+}
