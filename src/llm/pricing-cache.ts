@@ -3,6 +3,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 
 export interface CompactModelInfo {
   id: string;
+  im?: 0 | 1; // image input from this OpenRouter catalog (old caches may omit)
   n: string; // name
   c: number; // context_length
   m: number; // max_completion_tokens
@@ -239,6 +240,8 @@ function compactifyModel(m: Record<string, unknown>): CompactModelInfo | null {
   const reasoning = m.reasoning as Record<string, unknown> | undefined;
   return {
     id,
+    im: Array.isArray((m.architecture as { input_modalities?: unknown } | undefined)?.input_modalities) &&
+      ((m.architecture as { input_modalities: unknown[] }).input_modalities).includes("image") ? 1 : 0,
     n: typeof m.name === "string" ? m.name : id,
     c: typeof m.context_length === "number" ? m.context_length : 0,
     m: maxCompletionTokens(m, topProvider),

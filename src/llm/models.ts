@@ -111,7 +111,7 @@ function buildOpenRouterModel(config: ModelConfig): Model<"openai-completions"> 
     provider: "openrouter",
     baseUrl: OPENROUTER_BASE_URL,
     reasoning: info ? info.re === 1 : true,
-    input: ["text"],
+    input: info?.im === 1 ? ["text", "image"] : ["text"],
     cost: { input: pricing.input, output: pricing.output, cacheRead: pricing.cacheRead, cacheWrite: pricing.cacheWrite },
     contextWindow: info?.c ?? DEFAULT_CONTEXT_WINDOW,
     maxTokens: info?.m ?? DEFAULT_MAX_TOKENS,
@@ -155,7 +155,7 @@ function buildOpenAICompatibleModel(config: ModelConfig): Model<"openai-completi
     provider: "openai-compatible",
     baseUrl: normalizeOpenAICompatibleApiBaseUrl(config.openaiCompatibleBaseUrl),
     reasoning: false,
-    input: ["text"],
+    input: verifiedCompatibleImageInput(config.openaiCompatibleBaseUrl, config.modelId) ? ["text", "image"] : ["text"],
     cost: { input: pricing.input, output: pricing.output, cacheRead: pricing.cacheRead, cacheWrite: pricing.cacheWrite },
     contextWindow,
     maxTokens: DEFAULT_MAX_TOKENS,
@@ -331,6 +331,8 @@ export function normalizeOpenAICompatibleApiBaseUrl(baseUrl: string): string {
   const normalized = normalizeBaseUrl(baseUrl, DEFAULT_OPENAI_COMPATIBLE_BASE_URL);
   try {
     const url = new URL(normalized);
+    // DeepSeek documents the root Chat Completions endpoint; /api is OpenWebUI-specific.
+    if (url.protocol === "https:" && url.hostname === "api.deepseek.com" && !url.port) return normalized;
     if (url.pathname === "" || url.pathname === "/") {
       url.pathname = "/api";
       return url.toString().replace(/\/+$/, "");
@@ -409,3 +411,23 @@ async function withTimeout<T>(promise: PromiseLike<T>, timeoutMs: number): Promi
 
 // Keep the OpenAICompletionsCompat type referenced so downstream imports resolve.
 export type { OpenAICompletionsCompat };
+
+/** Endpoint-specific facts, never inferred from a model name or another gateway's catalog.
+ * Sources checked 2026-11-12:
+ * https://api-docs.deepseek.com/guides/vision/
+ * https://help.aliyun.com/en/model-studio/deepseek-api
+ * https://help.aliyun.com/en/model-studio/qwen-code (Token Plan endpoint and IDs)
+ */
+function verifiedCompatibleImageInput(baseUrl: string, modelId: string): boolean {
+  try {
+    const url = new URL(normalizeOpenAICompatibleApiBaseUrl(baseUrl));
+    if (url.protocol !== "https:" || url.port || url.username || url.password || url.search || url.hash) return false;
+    if (url.hostname === "api.deepseek.com" && ["", "/", "/v1"].includes(url.pathname)) {
+      return ["deepseek-flash", "deepseek-v4-flash-vision-exp"].includes(modelId);
+    }
+    if (url.hostname === "token-plan.cn-beijing.maas.aliyuncs.com" && url.pathname === "/compatible-mode/v1") {
+      return ["deepseek-v4.1-flash", "deepseek-v4.1-flash-1017"].includes(modelId);
+    }
+    return false;
+  } catch { return false; }
+}
