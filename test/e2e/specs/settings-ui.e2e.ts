@@ -247,6 +247,22 @@ describe("agentic-chat settings UI", function () {
       expect("searchApiKey" in storedWeb).toBe(false);
     }
 
+    await setSettingSelect("Search provider", "deepseek");
+    await waitForAgenticChatSetting((settings) => {
+      const snapshot = settings as unknown as SettingsSnapshot;
+      return snapshot.web.searchProvider === "deepseek" && snapshot.web.searchApiKey === "";
+    }, "DeepSeek must not inherit the previous provider key");
+    await setSettingText("Search API key", "deepseek-e2e-fixture");
+    await waitForAgenticChatSetting((settings) => {
+      const snapshot = settings as unknown as SettingsSnapshot;
+      return snapshot.web.searchApiKey === "deepseek-e2e-fixture";
+    }, "DeepSeek key was not saved");
+    await setSettingSelect("Search provider", "tavily");
+    await waitForAgenticChatSetting((settings) => {
+      const snapshot = settings as unknown as SettingsSnapshot;
+      return snapshot.web.searchApiKey === WEB_SEARCH_KEY;
+    }, "Switching back must restore the original provider key");
+
     await setSettingSelect("Search provider", "searxng");
     await waitForSetting("SearXNG instance URL");
     await setSettingText("SearXNG instance URL", "https://search.example.com");

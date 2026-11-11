@@ -1,3 +1,4 @@
+import { ObsidianSecretStore, switchWebSearchProvider } from "./secrets/secret-store";
 import { App, ButtonComponent, Notice, Platform, PluginSettingTab, Setting, TFile, TFolder, ToggleComponent, type SettingDefinitionItem } from "obsidian";
 import type AgenticChatPlugin from "./main";
 import { DEFAULT_PLUGINS_FOLDER, resolveMcpServers } from "./plugins/loader";
@@ -860,7 +861,7 @@ export class AgenticChatSettingTab extends PluginSettingTab {
           dropdown.addOption(provider, WEB_SEARCH_PROVIDER_LABELS[provider]);
         }
         dropdown.setValue(settings.web.searchProvider).onChange(async (value) => {
-          settings.web.searchProvider = value as WebSearchProvider;
+          switchWebSearchProvider(settings, value as WebSearchProvider, new ObsidianSecretStore(this.app));
           await this.save();
           this.redraw();
         });
@@ -882,8 +883,8 @@ export class AgenticChatSettingTab extends PluginSettingTab {
     } else {
       this.renderSecretInput(containerEl, {
         name: t("settings.searchApiKey"),
-        desc: t(settings.web.searchProvider === "tavily" ? "settings.tavilyKeyDesc" : "settings.braveKeyDesc"),
-        placeholder: settings.web.searchProvider === "tavily" ? "tvly-..." : "BSA...",
+        desc: settings.web.searchProvider === "deepseek" ? t("settings.deepseekKeyDesc") : t(settings.web.searchProvider === "tavily" ? "settings.tavilyKeyDesc" : "settings.braveKeyDesc"),
+        placeholder: settings.web.searchProvider === "deepseek" ? "sk-…" : settings.web.searchProvider === "tavily" ? "tvly-..." : "BSA...",
         hasValue: Boolean(settings.web.searchApiKey),
         onSet: async (value) => {
           settings.web.searchApiKey = value;

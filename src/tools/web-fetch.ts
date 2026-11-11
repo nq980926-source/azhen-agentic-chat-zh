@@ -1,3 +1,4 @@
+import { parseDeepSeekResponse, requestDeepSeek } from "./deepseek-web";
 import { requestUrl } from "obsidian";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
@@ -82,6 +83,7 @@ const FetchParameters = Type.Object({
 });
 
 export interface WebFetchConfig {
+  deepSeekApiKey?: string;
   fetcher: WebFetcher;
   /** Default cap on returned characters. */
   charLimit: number;
@@ -158,8 +160,16 @@ export function createWebFetchTool(config: WebFetchConfig): AgentTool<typeof Fet
         throw new Error(`Blocked by allowlist: ${new URL(url).hostname}`);
       }
       throwIfAborted(signal);
-      const response = await fetchFollowingRedirects(config.fetcher, url, signal, config.allowedHosts ?? "");
+      const deepSeek = config.deepSeekApiKey !== undefined;
+      if (deepSeek && [...url].length > 8192) throw new Error("DeepSeek URL exceeds 8192 characters.");
+      const response = deepSeek
+        ? await requestDeepSeek(config.fetcher, "fetch", { url }, config.deepSeekApiKey!, signal)
+        : await fetchFollowingRedirects(config.fetcher, url, signal, config.allowedHosts ?? "");
       throwIfAborted(signal);
+      const page = deepSeek ? parseDeepSeekResponse(response) as { title?: unknown; content?: unknown } | null : null;
+      if (deepSeek && (!page || typeof page.title !== "string" || typeof page.content !== "string")) {
+        throw new Error("DeepSeek fetch: invalid response.");
+      }
       if (response.status === 0) {
         throw new Error(`Could not fetch ${url}: ${response.text || "network error"}.`);
       }
@@ -168,8 +178,9 @@ export function createWebFetchTool(config: WebFetchConfig): AgentTool<typeof Fet
       }
       const limit = clampCharLimit(params.maxChars, config.charLimit);
       const offset = clampOffset(params.offset);
-      const contentType = response.headers["content-type"] ?? "";
-      const rendered = renderFetched(url, response.text, contentType, limit, offset);
+      const contentType = deepSeek ? "text/markdown" : response.headers["content-type"] ?? "";
+      const rendered = renderFetched(url, deepSeek ? page!.content as string : response.text, contentType, limit, offset);
+      if (deepSeek) rendered.title = page!.title as string;
       const artifact =
         config.artifactStore && rendered.sourceText
           ? await sourceArtifacts.write(config.artifactStore, {
@@ -381,6 +392,7 @@ export function normalizeWebUrl(input: string): string {
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error(`Only http(s) URLs can be fetched: ${input}`);
   }
+  if (parsed.username || parsed.password) throw new Error("URLs containing credentials are not allowed.");
   if (isBlockedHost(parsed.hostname)) {
     throw new Error(`Refusing to fetch a local or private address: ${parsed.hostname}`);
   }

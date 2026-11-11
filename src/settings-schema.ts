@@ -132,6 +132,8 @@ export interface WebSettings {
   searchProvider: WebSearchProvider;
   /** Secret id in Obsidian secretStorage. */
   searchApiKeySecretId: string;
+  /** Provider-specific references only; never plaintext credentials. */
+  searchApiKeySecretIds?: Partial<Record<WebSearchProvider, string>>;
   /**
    * @deprecated Runtime-only plaintext fallback for legacy data.json; persisted form omits this key entirely.
    * Secrets live in secretStorage via {@link searchApiKeySecretId}.

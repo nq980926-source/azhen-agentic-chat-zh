@@ -356,3 +356,19 @@ function parentOf(root: unknown, path: readonly string[]): Record<string, unknow
 function cloneSettings(settings: AgenticChatSettings): AgenticChatSettings {
   return structuredClone(settings);
 }
+
+/** Preserve each provider's secret while keeping the existing active search slot. */
+export function switchWebSearchProvider(settings: AgenticChatSettings, provider: WebSettings["searchProvider"], store: SecretStore): void {
+  const web = settings.web;
+  if (provider === web.searchProvider) return;
+  const refs = { ...web.searchApiKeySecretIds, [web.searchProvider]: web.searchApiKeySecretId };
+  store.setSecret(web.searchApiKeySecretId, web.searchApiKey.trim());
+  const nextRef = refs[provider] || `${WEB_SEARCH_API_KEY_SECRET_ID}-${provider}`;
+  // Do not accept a shared reference introduced by stale or manually edited settings.
+  const isolatedRef = Object.entries(refs).some(([name, ref]) => name !== provider && ref === nextRef)
+    ? `${WEB_SEARCH_API_KEY_SECRET_ID}-${provider}` : nextRef;
+  web.searchProvider = provider;
+  web.searchApiKeySecretId = isolatedRef;
+  web.searchApiKeySecretIds = { ...refs, [provider]: isolatedRef };
+  web.searchApiKey = store.getSecret(isolatedRef);
+}

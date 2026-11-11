@@ -632,6 +632,7 @@ export const messages = {
   "settings.webWarning": { en: "Web search and fetch send your query text and the URLs the agent opens to a third-party search provider and the websites involved.", zh: "网页搜索与抓取会将查询文本和 Agent 打开的 URL 发送给第三方搜索提供商及相关网站。" },
   "settings.searchApiKey": { en: "Search API key", zh: "搜索 API 密钥" },
   "settings.tavilyKeyDesc": { en: "Tavily API key (tavily.com).", zh: "Tavily API 密钥（tavily.com）。" },
+  "settings.deepseekKeyDesc": { en: "Dedicated DeepSeek search API key for Search and Fetch; separate from chat credentials.", zh: "DeepSeek 官方搜索专用 API Key，同时用于 Search 和 Fetch；不使用聊天模型密钥。" },
   "settings.braveKeyDesc": { en: "Brave Search API key (brave.com/search/api).", zh: "Brave Search API 密钥（brave.com/search/api）。" },
   "settings.allowedHosts": { en: "Allowed hosts", zh: "允许的主机" },
   "settings.allowedHostsDesc": { en: "Optional comma-separated host suffixes for fetch_url. Empty allows any public host. Example: example.com, *.wikipedia.org.", zh: "fetch_url 的可选主机后缀，以逗号分隔。留空允许任何公共主机。示例：example.com, *.wikipedia.org。" },

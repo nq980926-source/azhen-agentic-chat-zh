@@ -1,15 +1,17 @@
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
+import { deepSeekRequest, parseDeepSeekResponse, requestDeepSeek } from "./deepseek-web";
 import { truncateToolOutput } from "../vault/truncate";
 import { throwIfAborted, type WebFetcher, type WebHttpRequest } from "./web-fetch";
 import { wrapToolOutputTruncated } from "./tool-output-wrapper";
 
 /** Supported search backends. Tavily/Brave need an API key; SearXNG needs a URL. */
-export type WebSearchProvider = "tavily" | "brave" | "searxng";
+export type WebSearchProvider = "tavily" | "brave" | "searxng" | "deepseek";
 
-export const WEB_SEARCH_PROVIDERS: WebSearchProvider[] = ["tavily", "brave", "searxng"];
+export const WEB_SEARCH_PROVIDERS: WebSearchProvider[] = ["tavily", "brave", "searxng", "deepseek"];
 
 export const WEB_SEARCH_PROVIDER_LABELS: Record<WebSearchProvider, string> = {
+  deepseek: "DeepSeek",
   tavily: "Tavily (LLM-native, API key)",
   brave: "Brave Search (API key)",
   searxng: "SearXNG (self-hosted, no key)",
@@ -108,7 +110,24 @@ const SEARXNG: ProviderAdapter = {
   },
 };
 
+const DEEPSEEK: ProviderAdapter = {
+  validate: (config) => config.apiKey.trim() ? undefined : "web_search: configure a DeepSeek search API key.",
+  buildRequest: (query, count, config) => deepSeekRequest("search", { query, count, need_content: false }, config.apiKey),
+  parse: (body) => {
+    const results = asRecord(body).results;
+    if (!Array.isArray(results) || results.some((item) => {
+      const r = asRecord(item);
+      return typeof r.title !== "string" || typeof r.url !== "string";
+    })) throw new Error("DeepSeek search: invalid response.");
+    return results.map((item) => {
+      const r = asRecord(item);
+      return { title: asString(r.title), url: asString(r.url), snippet: asString(r.summary) || asString(r.snippet) };
+    });
+  },
+};
+
 const ADAPTERS: Record<WebSearchProvider, ProviderAdapter> = {
+  deepseek: DEEPSEEK,
   tavily: TAVILY,
   brave: BRAVE,
   searxng: SEARXNG,
@@ -138,16 +157,20 @@ export function createWebSearchTool(config: WebSearchConfig): AgentTool<typeof S
       if (invalid) throw new Error(invalid);
       const query = params.query.trim();
       if (!query) throw new Error("web_search: provide a non-empty query.");
+      if (config.provider === "deepseek" && [...query].length > 128) throw new Error("DeepSeek query must contain 1–128 Unicode characters.");
       const maxResults = clampResults(params.maxResults ?? config.maxResults);
       throwIfAborted(signal);
-      const response = await config.fetcher(adapter.buildRequest(query, maxResults, config), signal);
+      const response = config.provider === "deepseek"
+        ? await requestDeepSeek(config.fetcher, "search", { query, count: maxResults, need_content: false }, config.apiKey, signal)
+        : await config.fetcher(adapter.buildRequest(query, maxResults, config), signal);
+      const deepSeekBody = config.provider === "deepseek" ? parseDeepSeekResponse(response) : undefined;
       if (response.status === 0) {
         throw new Error(`web_search failed via ${config.provider}: ${response.text || "network error"}.`);
       }
       if (response.status < 200 || response.status >= 300) {
         throw new Error(`web_search failed via ${config.provider} (HTTP ${response.status}).`);
       }
-      const results = adapter.parse(safeJsonParse(response.text)).filter((result) => result.url).slice(0, maxResults);
+      const results = adapter.parse(config.provider === "deepseek" ? deepSeekBody : safeJsonParse(response.text)).filter((result) => result.url).slice(0, maxResults);
       return {
         content: [{ type: "text", text: wrapToolOutputTruncated(truncateToolOutput(formatResults(query, results)), "web_search") }],
         details: { provider: config.provider, query, count: results.length, results },
