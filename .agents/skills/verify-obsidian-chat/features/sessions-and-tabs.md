@@ -79,3 +79,21 @@ await $(".agentic-chat-session-list").waitForExist();
 - Export needs at least one user/assistant turn and writes a Markdown note.
 - The header buttons and the tab `x` have no direct e2e helper. A proof that
   calls `closeTab()` is not proof of the click target.
+
+## Native shortcuts (2026-11-12 candidate)
+
+Entry: plugin.openShortcut({requestId,message}), capability shortcutApiVersion=1.
+The workspace requests a fresh native ChatTab; it does not own an AgentService.
+Creation is unpublished until successful. The send binds to the new session token
+and uses the ordinary ChatView message pipeline, treating slash/hash as literal.
+Empty text creates only a blank conversation. Same IDs do not replay within the
+plugin lifetime. At three tabs, only a safe oldest tab can be closed via the
+original closeTab; history remains. Busy, approval, draft and attachments block
+rotation. Mobile moves also respect these protections.
+
+Proof: npx vitest run test/native-shortcut.test.ts test/native-shortcut-api.test.ts
+test/chat-view-lifecycle.test.ts test/chat-view-ask-user.test.ts
+test/session-activation-coordinator.test.ts test/agent-service.test.ts (84 passed).
+Native synthetic-provider harness: test/native-shortcut-harness.cjs plus the
+loopback fixture test/shortcut-provider.cjs; Windows 1.15.0, 15 passed.
+Android hardware is not verified. See NATIVE_SHORTCUT_API.md for boundaries.

@@ -32,7 +32,7 @@ import {
 import { ObsidianSessionManager } from "./session/session-manager";
 import { initPricingCache } from "./llm/pricing-cache";
 import { ApprovalModal } from "./ui/approval-modal";
-import { ChatView } from "./ui/chat-view";
+import { ChatView, type NativeShortcutResult } from "./ui/chat-view";
 import { buildQuickAskTarget } from "./ui/quick-ask";
 import { QuickAskModal } from "./ui/quick-ask-modal";
 import { ObsidianSecretStore, hydrateSettingsSecrets, settingsForStorage } from "./secrets/secret-store";
@@ -44,6 +44,10 @@ import { setSemanticLeaseNamespace } from "./retrieval/semantic-index";
 declare const __AGENTIC_CHAT_ENABLE_E2E_STREAM__: boolean;
 
 export default class AgenticChatPlugin extends Plugin {
+  readonly shortcutApiVersion = 1;
+  private shortcutBusy = false;
+  private shortcutDisposed = false;
+  private readonly shortcutRequests = new Map<string, Promise<NativeShortcutResult>>();
   settings: AgenticChatSettings = DEFAULT_SETTINGS;
   /** S4: single-source memory for plan restore — one value for all leaves, not per-view (Codex atomic override). */
   modeBeforePlan: AgentMode | null = null;
@@ -57,6 +61,7 @@ export default class AgenticChatPlugin extends Plugin {
   );
 
   async onload(): Promise<void> {
+    this.register(() => { this.shortcutDisposed=true; this.shortcutRequests.clear(); });
     this.secretStore = new ObsidianSecretStore(this.app);
     await this.loadSettings();
     // Scope the cross-window lease to this vault. Desktop uses the absolute
@@ -171,6 +176,28 @@ export default class AgenticChatPlugin extends Plugin {
     });
   }
 
+  /** Stable external entry: native view, native fresh conversation, literal message. */
+  openShortcut(request: {requestId:string;message:string}): Promise<NativeShortcutResult> {
+    if (!request || typeof request.requestId !== "string" || !request.requestId || request.requestId.length>128 || typeof request.message !== "string" || request.message.length>64000) return Promise.reject(new Error("快捷任务参数无效。"));
+    const existing=this.shortcutRequests.get(request.requestId);
+    if (existing) return existing;
+    const action=this.launchShortcut(request.message);
+    this.shortcutRequests.set(request.requestId, action);
+    return action;
+  }
+
+  private async launchShortcut(message:string): Promise<NativeShortcutResult> {
+    if (this.shortcutBusy || this.shortcutDisposed) throw new Error("聊天正在准备或插件已停用，未发送。");
+    this.shortcutBusy=true;
+    try {
+      const leaf=await this.activateView();
+      if (!leaf || this.shortcutDisposed) throw new Error("无法打开聊天，未发送。");
+      await leaf.loadIfDeferred();
+      if (this.shortcutDisposed || !(leaf.view instanceof ChatView)) throw new Error("聊天尚未就绪，未发送。");
+      return await leaf.view.openShortcut(message);
+    } finally { this.shortcutBusy=false; }
+  }
+
   createMcpOAuthCallbackReceiver(): McpOAuthCallbackReceiver {
     return this.mcpOAuthCallbacks.createReceiver();
   }
@@ -252,7 +279,7 @@ export default class AgenticChatPlugin extends Plugin {
     return choice;
   }
 
-  async activateView(): Promise<void> {
+  async activateView(): Promise<WorkspaceLeaf | null> {
     const { workspace } = this.app;
     const existing = workspace.getLeavesOfType(VIEW_TYPE_AGENT_CHAT);
     let leaf: WorkspaceLeaf | null;
@@ -266,7 +293,7 @@ export default class AgenticChatPlugin extends Plugin {
           // Never detach a busy leaf or one with several in-memory tabs.
           await workspace.revealLeaf(sidebarLeaf);
           workspace.setActiveLeaf(sidebarLeaf, { focus: true });
-          return;
+          return sidebarLeaf;
         }
 
         const previousLeaf = existing[0] ?? null;
@@ -283,11 +310,12 @@ export default class AgenticChatPlugin extends Plugin {
 
     if (!leaf) {
       leaf = workspace.getRightLeaf(false);
-      if (!leaf) return;
+      if (!leaf) return null;
       await leaf.setViewState({ type: VIEW_TYPE_AGENT_CHAT, active: true });
     }
     await workspace.revealLeaf(leaf);
     workspace.setActiveLeaf(leaf, { focus: true });
+    return leaf;
   }
 
   async loadSettings(): Promise<void> {

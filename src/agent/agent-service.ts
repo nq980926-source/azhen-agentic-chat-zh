@@ -511,8 +511,8 @@ export class AgentService {
     }
   }
 
-  async sendPrompt(prompt: string, images?: ImageContent[], expectedSessionToken?: string): Promise<void> {
-    const trimmed = prompt.trim();
+  async sendPrompt(prompt: string, images?: ImageContent[], expectedSessionToken?: string, preserveWhitespace = false): Promise<void> {
+    const trimmed = preserveWhitespace ? prompt : prompt.trim();
     if (!trimmed) return;
     const attached = images && images.length > 0 ? images : undefined;
     await this.runPrompt((agent) => agent.prompt(trimmed, attached), expectedSessionToken);

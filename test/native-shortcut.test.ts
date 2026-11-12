@@ -1,0 +1,21 @@
+import {describe,it,expect,vi} from "vitest";
+import {ChatView} from "../src/ui/chat-view";
+type NativeEvent={type:string;message?:{role:string}};
+function tab(id:string,busy=false){return {service:{newSession:vi.fn(async()=>{}),getSessionInfo:()=>({id,path:id}),getSessionToken:()=>id,getMessages:()=>[],isTurnInFlight:()=>busy,getSessionSwapState:()=>"live",abort:vi.fn(),dispose:vi.fn(),getError:()=>undefined,onEvent:(_fn:(event:NativeEvent)=>void)=>()=>{}},state:{draft:"",attachments:[],queuedPromptArmed:false},unsubscribe:vi.fn()};}
+type TestTab=ReturnType<typeof tab>;
+type Harness={tabs:TestTab[];activeTabIndex:number;openShortcut(message:string):Promise<{status:string}>;sendPrompt:ReturnType<typeof vi.fn>};
+function setup(old:TestTab[]=[tab('old')]){
+ const fresh=tab('fresh');const view=Object.assign(Object.create(ChatView.prototype),{tabs:old,activeTabIndex:old.length-1,closed:false,shortcutOpening:false,inputEl:{value:""},attachments:[],localImages:new Map(),queuedPromptArmed:false,promptEdit:{index:null},createTab:()=>fresh,saveActiveState:vi.fn(),loadActiveState:vi.fn(),renderActiveTab:vi.fn(),syncTabStrip:vi.fn(),endEditing:vi.fn(),sendPrompt:vi.fn(async(_s:string,expected:{token:string})=>{expect(expected.token).toBe('fresh');listener?.({type:'message_end',message:{role:'user'}});}),pushHistory:vi.fn(),showServiceError:vi.fn()}) as Harness;
+ let listener:((event:NativeEvent)=>void)|undefined;fresh.service.onEvent=(fn:(event:NativeEvent)=>void)=>{listener=fn;return ()=>{};};return {view,fresh};
+}
+describe('native shortcut handoff',()=>{
+ it('creates a native session and sends literal text once in that session',async()=>{const {view,fresh}=setup();const text='  /literal #text  ';const r=await view.openShortcut(text);expect(r.status).toBe('submitted');expect(fresh.service.newSession).toHaveBeenCalledOnce();expect(view.sendPrompt).toHaveBeenCalledWith(text,expect.objectContaining({token:'fresh'}));});
+ it('non-empty whitespace is preserved as a literal message',async()=>{const {view}=setup();expect((await view.openShortcut('   ')).status).toBe('submitted');expect(view.sendPrompt).toHaveBeenCalledWith('   ',expect.anything());});
+ it('empty message opens a fresh native session without sending',async()=>{const {view}=setup();expect((await view.openShortcut('')).status).toBe('opened');expect(view.sendPrompt).not.toHaveBeenCalled();});
+ it('creation failure never sends to the old tab',async()=>{const {view,fresh}=setup();fresh.service.newSession.mockRejectedValue(Error('disk failed'));await expect(view.openShortcut('x')).rejects.toThrow('disk failed');expect(view.sendPrompt).not.toHaveBeenCalled();expect(view.tabs).toHaveLength(1);expect(fresh.service.dispose).toHaveBeenCalled();});
+ it('FIFO refuses a busy oldest tab instead of closing another',async()=>{const tabs=[tab('first',true),tab('second'),tab('third')];const {view}=setup(tabs);await expect(view.openShortcut('x')).rejects.toThrow(/最早/);expect(view.tabs).toEqual(tabs);expect(tabs[0].service.dispose).not.toHaveBeenCalled();});
+ it('FIFO closes the oldest native tab and retains its history',async()=>{const tabs=[tab('first'),tab('second'),tab('third')];const [first,second,third]=tabs;const {view,fresh}=setup(tabs);await view.openShortcut('');expect(view.tabs).toEqual([second,third,fresh]);expect(first.service.dispose).toHaveBeenCalledOnce();});
+ it('tab switch during creation prevents sending',async()=>{const tabs=[tab('first'),tab('second')];const {view,fresh}=setup(tabs);fresh.service.newSession.mockImplementation(async()=>{view.activeTabIndex=0;});await expect(view.openShortcut('x')).rejects.toThrow(/切换/);expect(view.sendPrompt).not.toHaveBeenCalled();});
+ it('closing the view during creation prevents sending',async()=>{const {view,fresh}=setup();fresh.service.newSession.mockImplementation(async()=>{Object.assign(view,{closed:true});});await expect(view.openShortcut('x')).rejects.toThrow(/关闭/);expect(view.sendPrompt).not.toHaveBeenCalled();expect(fresh.service.dispose).toHaveBeenCalled();});
+ it('a draft on oldest tab blocks rotation',async()=>{const tabs=[tab('first'),tab('second'),tab('third')];tabs[0].state.draft='unsent';const {view}=setup(tabs);await expect(view.openShortcut('x')).rejects.toThrow(/最早/);});
+});

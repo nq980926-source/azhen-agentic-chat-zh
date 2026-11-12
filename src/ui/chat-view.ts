@@ -141,6 +141,11 @@ import type { ActionRow, WorkflowRenderer } from "./workflow-renderer";
 import { openSystemUrl } from "./open-system-link";
 
 export { VIEW_TYPE_AGENT_CHAT };
+export interface NativeShortcutResult {
+  sessionId: string;
+  status: "opened" | "submitted" | "not_sent" | "unknown";
+  error?: string;
+}
 
 /** Context-window fill fractions that trigger a background notification, once each. */
 const CONTEXT_THRESHOLDS = [0.75, 0.9] as const;
@@ -244,6 +249,8 @@ export class ChatView extends ItemView {
   private androidViewportFrame: number | null = null;
   private androidViewportCleanup: (() => void) | null = null;
   private closed = true;
+  private shortcutOpening = false;
+  private pendingShortcutTab?: ChatTab;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -309,6 +316,8 @@ export class ChatView extends ItemView {
 
   async onClose(): Promise<void> {
     this.closed = true;
+    this.pendingShortcutTab?.service.abort();
+    this.pendingShortcutTab?.service.dispose();
     this.androidViewportCleanup?.();
     this.cancelAutocomplete();
     this.menu?.detach();
@@ -676,6 +685,77 @@ export class ChatView extends ItemView {
   /** Public entry for the "New conversation" command: fresh session in the active tab. */
   async startNewConversation(): Promise<void> {
     await this.newSession();
+  }
+
+  private shortcutProtected(tab: ChatTab): boolean {
+    const active = tab === this.activeTab;
+    const state = tab.service.getSessionSwapState();
+    return tab.service.isTurnInFlight() || !!tab.needsApproval || !!tab.pendingApprovalModal ||
+      (state !== "live" && state !== "idle") ||
+      !!(active ? this.inputEl.value : tab.state.draft) ||
+      !!(active ? this.attachments.length : tab.state.attachments.length) ||
+      !!this.localImages.get(tab)?.length ||
+      (active ? this.queuedPromptArmed : tab.state.queuedPromptArmed) ||
+      (active && this.promptEdit.index !== null);
+  }
+
+  /** Native UI handoff. Only original ChatTab services own these conversations. */
+  async openShortcut(message: string): Promise<NativeShortcutResult> {
+    if (this.closed || !this.tabs.length) throw new Error("聊天视图尚未就绪。");
+    if (this.shortcutOpening) throw new Error("正在创建快捷对话，请稍候再点。");
+    this.shortcutOpening = true;
+    let tab: ChatTab | undefined;
+    let attached = false;
+    try {
+      const previous = [...this.tabs], active = this.activeTab;
+      if (previous.length >= MAX_TABS && this.shortcutProtected(previous[0])) {
+        throw new Error("最早的聊天仍在运行、等待操作或有草稿，未关闭；请先处理该聊天。");
+      }
+      tab = this.pendingShortcutTab = this.createTab();
+      // Do not publish this tab until creation succeeds. No UI action can swap
+      // its service during creation, so the captured receipt belongs to this call.
+      await tab.service.newSession();
+      const info = tab.service.getSessionInfo(), token = tab.service.getSessionToken();
+      if (!info?.id || previous.some(t => t.service.getSessionInfo()?.id === info.id)) throw new Error("未取得新的会话标识，未发送。");
+      if (this.closed || this.activeTab !== active || this.tabs.length !== previous.length || this.tabs.some((t,i)=>t!==previous[i])) {
+        throw new Error("创建期间视图已关闭或标签已切换，未发送。");
+      }
+      if (previous.length >= MAX_TABS && this.shortcutProtected(previous[0])) throw new Error("最早的聊天状态已变化，未关闭、未发送。");
+      const retire = previous.length >= MAX_TABS ||
+        (previous.length === 1 && !this.shortcutProtected(previous[0]) && previous[0].service.getMessages().length === 0);
+      this.endEditing(false);
+      this.saveActiveState();
+      this.tabs.push(tab);
+      this.activeTabIndex = this.tabs.length - 1;
+      attached = true;
+      this.loadActiveState();
+      this.renderActiveTab();
+      if (retire) this.closeTab(0); // Original close only disposes the tab, not its history.
+      if (message.length === 0) return {sessionId: info.id, status: "opened"};
+      this.pushHistory(message);
+      const target = tab;
+      let settle!: (result: NativeShortcutResult) => void;
+      let finished = false;
+      const receipt = new Promise<NativeShortcutResult>(resolve => { settle = result => { if (!finished) { finished=true; resolve(result); } }; });
+      const off = target.service.onEvent(event => {
+        if (event.type === "message_end" && event.message.role === "user") {
+          settle({sessionId:info.id,status:target.service.getError()?"unknown":"submitted",error:target.service.getError()});
+        }
+      });
+      // This is the same plain-message UI pipeline; deliberately bypass submit's
+      // slash-command / standing-instruction parsing. No prompt prefix is added.
+      void this.sendPrompt(message, {tab:target,token}).then(() => {
+        settle({sessionId:info.id,status:"not_sent",error:target.service.getError() ?? "未确认消息进入新会话，请在聊天中查看；不会自动重发。"});
+      }, error => {
+        if (this.isLiveTab(target)) this.renderErrorMessage(error instanceof Error?error.message:String(error));
+        settle({sessionId:info.id,status:"unknown",error:"发送未确认，请在新对话中查看；不会自动重发。"});
+      });
+      try { return await receipt; } finally { off(); }
+    } finally {
+      if (!attached && tab) { tab.unsubscribe(); tab.service.abort(); tab.service.dispose(); }
+      this.pendingShortcutTab = undefined;
+      this.shortcutOpening = false;
+    }
   }
 
   private buildLayout(): void {
@@ -1146,7 +1226,7 @@ export class ChatView extends ItemView {
 
   /** A mobile migration may close an idle single-tab leaf after copying its draft. */
   canCloseForMobileMove(): boolean {
-    return !this.closed && this.tabs.length === 1 && !this.isAnyTabStreaming();
+    return !this.closed && this.tabs.length === 1 && !this.shortcutProtected(this.tabs[0]);
   }
 
   /** Preserve an unsent draft when moving a legacy sidebar view into a root tab. */
@@ -1744,6 +1824,7 @@ export class ChatView extends ItemView {
     explicitAttachments: ContextAttachment[],
     autoPath: string | null,
     text: string,
+    literal = false,
   ): Promise<{ prompt: string; images: ImageContent[]; sessionToken: string; messageCountBefore: number } | null> {
     // A fresh tab has no session yet. Create/continue it before sampling the
     // token, otherwise the token changes during this same send and the guard
@@ -1767,7 +1848,7 @@ export class ChatView extends ItemView {
       this.abandonSend(service, activeNoteCache, contextCache);
       return null;
     }
-    const prompt = assemblePrompt(context, text);
+    const prompt = literal ? (context ? `${context}\n\n${text}` : text) : assemblePrompt(context, text);
     // Image attachments ride as multimodal content parts, not text context.
     const images = await this.loadImageAttachmentsFor(service, explicitAttachments);
     if (!this.isLiveTab(tab)) {
@@ -1781,7 +1862,8 @@ export class ChatView extends ItemView {
     return { prompt, images, sessionToken, messageCountBefore };
   }
 
-  private async sendPrompt(text: string): Promise<void> {
+  private async sendPrompt(text: string, expected?: {tab:ChatTab;token:string}): Promise<void> {
+    if (expected && (!this.isLiveTab(expected.tab) || expected.tab.service.getSessionToken() !== expected.token)) throw new Error("目标会话已变化，未发送。");
     const tab = this.activeTab;
     const service = tab.service;
     const activeNoteCache = this.activeNoteCache;
@@ -1800,12 +1882,14 @@ export class ChatView extends ItemView {
         explicitAttachments,
         autoPath,
         text,
+        !!expected,
       );
       if (!prepared) return;
+      if (expected && prepared.sessionToken !== expected.token) throw new Error("目标会话已变化，未发送。");
       this.lastSentPrompt = prepared.prompt;
       this.lastSentDisplay = text;
       this.renderOutgoingUserMessage(text, attachments);
-      await service.sendPrompt(prepared.prompt, prepared.images, prepared.sessionToken);
+      await service.sendPrompt(prepared.prompt, prepared.images, prepared.sessionToken, !!expected);
       if (!this.isLiveTab(tab)) {
         this.discardPendingSend(activeNoteCache, contextCache);
         return;
