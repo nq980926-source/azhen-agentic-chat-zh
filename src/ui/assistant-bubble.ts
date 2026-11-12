@@ -1,3 +1,4 @@
+import { ToolCallGroup } from "./tool-call-group";
 import { type App, type Component, loadMermaid, MarkdownRenderer, Notice, setIcon } from "obsidian";
 import type { Usage } from "@earendil-works/pi-ai";
 import { t } from "../i18n";
@@ -113,6 +114,7 @@ export class AssistantBubble {
   constructor(
     parent: HTMLElement,
     private readonly actions: BubbleActions = {},
+    private readonly toolGroup = new ToolCallGroup(),
   ) {
     this.el = parent.createDiv({ cls: ["agentic-chat-message", "agentic-chat-assistant"] });
     this.textEl = this.el.createDiv({ cls: ["agentic-chat-text", "is-streaming", "is-empty"] });
@@ -278,11 +280,13 @@ export class AssistantBubble {
   }
 
   startStep(id: string, name: string, rawArgs: string): void {
+    if (this.steps.has(id)) return;
     // A step is a manual collapsible row sharing ONE anatomy with the reasoning
     // pill: [‹ chevron] [card]. Only the outside chevron toggles the body — so a
     // clickable path inside the header navigates without collapsing the step.
     // Raw arg JSON is never shown inline.
     const row = this.stepsEl.createDiv({ cls: "agentic-chat-step-row" });
+    this.toolGroup.add(id, row);
     const toggle = row.createSpan({
       cls: "agentic-chat-step-toggle",
       attr: { role: "button", tabindex: "0", "aria-expanded": "false", "aria-label": t("tool.toggleDetails") },
@@ -625,6 +629,7 @@ export class AssistantBubble {
     // so the dispatch card would stay empty without this.
     if (step.name === SUBAGENT_TOOL_NAME) this.renderReplayedSubagent(step, resultObject);
     this.markStepSettled(step, failed);
+    this.toolGroup.settle(id, failed);
     // get_active_note carries its target path in the RESULT, not the args, so
     // harvest it here (startStep can only see args). Live calls pass the raw
     // result object; history replay passes only the rendered text, whose first

@@ -1,4 +1,4 @@
-import { browser, expect, $ } from "@wdio/globals";
+import { browser, expect, $, $$ } from "@wdio/globals";
 import { before, describe, it } from "mocha";
 
 /**
@@ -378,4 +378,62 @@ describe("agentic-chat beautifului polish", function () {
     const bubbles = await probe({ key: "count", selector: ".agentic-chat-assistant", all: true });
     expect(bubbles.count.length).toBeGreaterThan(0);
   });
+  it("groups tools across assistant messages, retains expansion, and separates users", async function () {
+    await emit({ type: "message_start", message: { role: "user", content: [] } });
+    await startAssistantTurn();
+    await emit(toolStart("group-1", "ls", {}));
+    await emit(toolEnd("group-1"));
+    const summary = (await $$(".agentic-chat-tool-summary")).at(-1)!;
+    await expect(summary).toHaveAttribute("aria-expanded", "false");
+    await summary.click();
+    await emit({ type: "message_start", message: { role: "assistant", content: [] } });
+    await emit(streamDelta("thinking_delta", "second reasoning"));
+    await emit(toolStart("group-2", "ls", {}));
+    await emit(toolEnd("group-2", "failed", true));
+    await expect(summary).toHaveAttribute("aria-expanded", "true");
+    await expect(summary).toHaveText(expect.stringContaining("2 次 · 1 次失败"));
+    await summary.click();
+    const state = await browser.execute(() => ({
+      collapsed: document.querySelectorAll(".agentic-chat-step-row.is-group-collapsed").length,
+      overflow: Array.from(document.querySelectorAll(".agentic-chat-tool-summary")).some(el => el.scrollWidth > el.clientWidth + 1),
+    }));
+    expect(state.collapsed).toBeGreaterThanOrEqual(2);
+    expect(state.overflow).toBe(false);
+    await emit({ type: "agent_end" });
+    await emit({ type: "message_start", message: { role: "user", content: [] } });
+    await startAssistantTurn();
+    await emit(toolStart("group-3", "ls", {}));
+    await expect($(".agentic-chat-assistant:last-child .agentic-chat-tool-summary")).toHaveText(expect.stringContaining("1 次 · 正在执行"));
+    await emit(toolEnd("group-3"));
+    await emit({ type: "agent_end" });
+  });
+
+
+  it("replays historical tool groups at user boundaries without changing message data", async function () {
+    const state = await browser.executeObsidian(async ({ app }, viewType) => {
+      const view = app.workspace.getLeavesOfType(viewType)[0]?.view as unknown as { renderTranscript(messages: unknown[]): void };
+      const call = (id: string) => ({ role: "assistant", content: [{ type: "thinking", thinking: "trace" }, { type: "toolCall", id, name: "ls", arguments: {} }] });
+      const result = (id: string, isError: boolean) => ({ role: "toolResult", toolCallId: id, isError, content: [{ type: "text", text: "detail" }] });
+      const messages = [
+        { role: "user", content: "first" }, call("history-1"), result("history-1", false),
+        call("history-2"), result("history-2", true),
+        { role: "user", content: "second" }, call("history-3"), result("history-3", false),
+      ];
+      const before = JSON.stringify(messages);
+      view.renderTranscript(messages);
+      return {
+        labels: Array.from(document.querySelectorAll(".agentic-chat-tool-summary")).map(el => el.textContent),
+        collapsed: document.querySelectorAll(".agentic-chat-step-row.is-group-collapsed").length,
+        reasoning: document.querySelectorAll(".agentic-chat-reasoning").length,
+        unchanged: JSON.stringify(messages) === before,
+      };
+    }, VIEW_TYPE_AGENT_CHAT);
+    expect(state.labels).toHaveLength(2);
+    expect(state.labels[0]).toContain("2 次 · 1 次失败");
+    expect(state.labels[1]).toContain("1 次 · 已完成");
+    expect(state.collapsed).toBe(3);
+    expect(state.reasoning).toBe(3);
+    expect(state.unchanged).toBe(true);
+  });
+
 });

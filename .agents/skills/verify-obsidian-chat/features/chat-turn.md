@@ -90,3 +90,11 @@ await browser.waitUntil(async () =>
   with the `PLAN_COMPLETE` marker.
 - The plugin no longer shows a per-turn usage footer. Usage is in the bottom bar
   and `/usage`.
+
+## Tool summary (2026-11-12)
+
+Entry points: live replies and reopened history, shared desktop/mobile ChatView.
+Tools share one display controller per user-message boundary; rows keep timeline positions.
+Proof: `npm run verify -- change test/tool-call-group.test.ts`;
+UI assertion: `test/e2e/specs/beautifului-polish.e2e.ts` (groups tools test).
+Status: partial until real Windows and Android UI verification.

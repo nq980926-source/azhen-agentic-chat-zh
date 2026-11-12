@@ -1,3 +1,4 @@
+import { ToolCallGroup } from "./tool-call-group";
 import {
   ItemView,
   Notice,
@@ -182,6 +183,7 @@ export class ChatView extends ItemView {
     this.plugin.modeBeforePlan = value;
   }
   private bubble: AssistantBubble | null = null;
+  private toolGroup = new ToolCallGroup();
   private readonly notifier = new Notifier(() => this.plugin.settings.notifications.enabled);
   private notifiedContext = new Set<number>();
   private notifiedCost = false;
@@ -2921,12 +2923,17 @@ export class ChatView extends ItemView {
 
   private renderTranscript(messages: AgentMessage[]): void {
     this.messagesEl.empty();
+    this.toolGroup = new ToolCallGroup();
     this.bubble = null;
     this.lastBubbleError = undefined;
     const toolResults = collectToolResults(messages);
     const lastAssistant = lastIndex(messages, (message) => message.role === "assistant");
     let rendered = 0;
     messages.forEach((message, index) => {
+      if (message.role === "user") {
+        this.toolGroup.finish();
+        this.toolGroup = new ToolCallGroup();
+      }
       if (message.role === "user" && isSummaryMessage(message)) {
         // A compaction summary isn't a user turn: show it as a distinct,
         // non-editable block instead of an editable user bubble.
@@ -2942,6 +2949,7 @@ export class ChatView extends ItemView {
         rendered += 1;
       }
     });
+    this.toolGroup.finish();
     if (rendered === 0) this.renderEmptyState();
     this.scrollToBottom();
   }
@@ -3034,6 +3042,7 @@ export class ChatView extends ItemView {
   }
 
   private renderOutgoingUserMessage(text: string, attachments: ContextAttachment[]): void {
+    this.toolGroup = new ToolCallGroup();
     this.locallyRenderedUserMessages += 1;
     this.renderUserMessage(text, attachments, undefined, { forceScroll: true });
   }
@@ -3049,6 +3058,7 @@ export class ChatView extends ItemView {
         this.setRunning(true);
         break;
       case "message_start":
+        if (event.message.role === "user") this.toolGroup = new ToolCallGroup();
         if (event.message.role === "assistant") {
           this.bubble?.dispose();
           this.bubble = this.newBubble();
@@ -3083,6 +3093,7 @@ export class ChatView extends ItemView {
         );
         break;
       case "agent_end":
+        this.toolGroup.finish();
         this.bubble?.finalizeWithoutText();
         this.setRunning(false);
         this.statusEl.setText("");
@@ -3135,7 +3146,7 @@ export class ChatView extends ItemView {
       onOpenNote: (path) => void this.app.workspace.openLinkText(path, "", false),
       onContentChange: () => this.scrollToBottom(),
       onStopSubagentChild: (id) => this.service.abortSubagentChild(id),
-    });
+    }, this.toolGroup);
   }
 
   /** Exit plan mode and send the implement prompt. */
