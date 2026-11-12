@@ -2455,3 +2455,22 @@ body.is-phone .agentic-chat-field {
 .agentic-chat-local-image { display: inline-flex; align-items: center; gap: 4px; }
 .agentic-chat-local-image img { width: 48px; height: 48px; object-fit: cover; border-radius: 4px; }
 .agentic-chat-sent-image { display: block; max-width: 100%; max-height: 280px; object-fit: contain; margin: 4px 0; }
+
+/* Tool summaries share the transcript on desktop and mobile; details keep their timeline order. */
+.agentic-chat-tool-summary {
+  width: 100%;
+  min-height: 32px;
+  height: auto;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+  color: var(--text-muted);
+  background: var(--background-secondary);
+  margin-block: 4px;
+}
+.agentic-chat-tool-summary.is-error { color: var(--text-error); }
+.agentic-chat-step-row.is-group-collapsed { display: none; }
+.is-mobile .agentic-chat-tool-summary { min-height: 44px; }
+
+/* Keep activity records in their original timelines; never fold the answer. */
+.agentic-chat-assistant .is-activity-collapsed { display: none; }

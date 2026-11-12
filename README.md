@@ -1,6 +1,6 @@
 # 阿斟 · Agentic Chat 简体中文汉化版
 
-这是 Obsidian 插件 [Agentic Chat](https://github.com/tardigrde/obsidian-agentic-chat) 的**非官方简体中文汉化构建**，保留阿斟 Memory 聊天联动、Knowledge MCP、模型设置、工具审批和聊天历史能力。当前正式版本为 **0.51.22**，Windows 与 Android 使用同一组插件文件。
+这是 Obsidian 插件 [Agentic Chat](https://github.com/tardigrde/obsidian-agentic-chat) 的**非官方简体中文汉化构建**，保留阿斟 Memory 聊天联动、Knowledge MCP、模型设置、工具审批和聊天历史能力。当前正式版本为 **0.51.23**，Windows 与 Android 使用同一组插件文件。
 
 > 本项目并非 Agentic Chat 官方版本，与原作者无官方隶属关系。原项目作者为 [tardigrde](https://github.com/tardigrde)。
 
@@ -80,3 +80,7 @@
 ## 0.51.22 视觉能力识别
 
 按已核实的服务端点与精确模型 ID 修复 DeepSeek V4.1 Flash 图片能力识别，复用 OpenRouter 模态元数据。保留未知或非视觉模型拦截，不更改用户模型、API 地址或 Token。[发布说明](release/0.51.22/release-notes.md)。
+
+## 0.51.23 思考与工具统一折叠
+
+同一轮思考和工具记录默认统一收起，展开保留原始顺序与完整详情，正文独立显示。Windows / Android 共用安装资源。见[发布说明](release/0.51.23/release-notes.md)。
