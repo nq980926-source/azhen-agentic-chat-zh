@@ -143,6 +143,7 @@ export class AssistantBubble {
   appendReasoning(delta: string): void {
     if (this.markdown) return;
     if (!this.reasoningBody) this.ensureReasoningShell();
+    if (delta && this.reasoningBody?.parentElement) this.toolGroup.reasoning(this.reasoningBody.parentElement, true);
     this.pendingReasoning += delta;
     this.scheduleFlush();
   }
@@ -176,6 +177,7 @@ export class AssistantBubble {
     const anchor = this.textEl.parentElement === this.timelineEl ? this.textEl : (this.timelineEl?.querySelector(".agentic-chat-steps") ?? null);
     if (anchor) this.timelineEl?.insertBefore(details, anchor);
     else this.timelineEl?.appendChild(details);
+    this.toolGroup.reasoning(details, false);
     this.reasoningStart = performance.now();
     this.reasoningTimerHandle = window.setInterval(() => {
       this.reasoningTimeEl?.setText(formatElapsed(performance.now() - this.reasoningStart));
@@ -269,6 +271,7 @@ export class AssistantBubble {
     this.stopReasoningTimer();
     if (this.reasoningSettled || !this.reasoningBody) return;
     this.reasoningSettled = true;
+    if (this.reasoningBody.parentElement) this.toolGroup.settleReasoning(this.reasoningBody.parentElement);
     const elapsed = performance.now() - this.reasoningStart;
     this.reasoningLabelEl?.setText(t("tool.reasoned"));
     // A live stream keeps the final elapsed time; a near-instant/static trace

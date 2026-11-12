@@ -2471,3 +2471,6 @@ body.is-phone .agentic-chat-field {
 .agentic-chat-tool-summary.is-error { color: var(--text-error); }
 .agentic-chat-step-row.is-group-collapsed { display: none; }
 .is-mobile .agentic-chat-tool-summary { min-height: 44px; }
+
+/* Keep activity records in their original timelines; never fold the answer. */
+.agentic-chat-assistant .is-activity-collapsed { display: none; }

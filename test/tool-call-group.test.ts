@@ -52,3 +52,58 @@ describe("per-user-turn tool summary", () => {
     expect(p.children).toEqual(original); expect(b.text.length).toBe(60000); expect(p.children.indexOf(a)).toBeLessThan(p.children.indexOf(reasoning));
   });
 });
+
+describe("thought and tool outer summary", () => {
+  const reasoning = (g: ToolCallGroup, p: Node) => {
+    const n = p.createEl(); n.text = "original reasoning";
+    g.reasoning(n as unknown as HTMLElement, true);
+    return n;
+  };
+  it("collapses reasoning alone and settles without altering its details", () => {
+    const g = new ToolCallGroup(), p = new Node(); const r = reasoning(g,p);
+    const summary = p.children[0];
+    expect(summary.text).toContain("思考与工具调用 · 1 项 · 进行中");
+    expect(r.classes.has("is-activity-collapsed")).toBe(true);
+    summary.click(); g.finish();
+    expect(summary.text).toContain("已完成");
+    expect(r.classes.has("is-activity-collapsed")).toBe(false);
+    expect(r.text).toBe("original reasoning");
+  });
+  it("preserves interleaved order and independent inner expansion as tools stream", () => {
+    const g = new ToolCallGroup(), p = new Node(), q = new Node();
+    const a = reasoning(g,p); const tool1 = add(g,p,"a"); const b = reasoning(g,q);
+    const answer = q.createEl(); answer.text = "final answer";
+    const outer = p.children[0], inner = p.children[2];
+    outer.click(); inner.click();
+    const tool2 = add(g,q,"b"); const originalP = [...p.children], originalQ = [...q.children];
+    g.settle("a",false); g.settle("b",true); g.finish();
+    expect(outer.text).toContain("3 项 · 1 次失败");
+    expect(a.classes.has("is-activity-collapsed")).toBe(false);
+    expect(b.classes.has("is-activity-collapsed")).toBe(false);
+    expect(tool2.classes.has("is-group-collapsed")).toBe(false);
+    outer.click(); expect(tool1.classes.has("is-activity-collapsed")).toBe(true);
+    outer.click(); expect(tool1.classes.has("is-group-collapsed")).toBe(false);
+    expect(p.children).toEqual(originalP); expect(q.children).toEqual(originalQ);
+    expect(answer.classes.size).toBe(0); expect(answer.text).toBe("final answer");
+  });
+  it("puts the outer summary before tools when actual reasoning arrives later", () => {
+    const g = new ToolCallGroup(), p = new Node(), q = new Node(); add(g,p,"a");
+    const inner = p.children[0]; reasoning(g,q);
+    expect(p.children[1]).toBe(inner); expect(p.children[0].text).toContain("2 项");
+    expect(inner.classes.has("is-activity-collapsed")).toBe(true);
+  });
+  it("does not count empty status shells as reasoning or show an empty summary", () => {
+    const g = new ToolCallGroup(), p = new Node(); const empty = p.createEl();
+    g.reasoning(empty as unknown as HTMLElement, false);
+    expect(p.children).toEqual([empty]); expect(empty.classes.has("is-activity-collapsed")).toBe(true);
+    add(g,p,"tool"); expect(p.children[1].text).toContain("工具调用 · 1 次");
+    expect(p.children).toHaveLength(3);
+  });
+  it("deduplicates reasoning updates and isolates turn controllers", () => {
+    const g = new ToolCallGroup(), other = new ToolCallGroup(), p = new Node(), q = new Node();
+    const r = reasoning(g,p); g.reasoning(r as unknown as HTMLElement,true);
+    reasoning(other,q); p.children[0].click();
+    expect(p.children[0].text).toContain("1 项");
+    expect(q.children[1].classes.has("is-activity-collapsed")).toBe(true);
+  });
+});

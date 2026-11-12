@@ -98,3 +98,5 @@ Tools share one display controller per user-message boundary; rows keep timeline
 Proof: `npm run verify -- change test/tool-call-group.test.ts`;
 UI assertion: `test/e2e/specs/beautifului-polish.e2e.ts` (groups tools test).
 Status: partial until real Windows and Android UI verification.
+
+Thought/tool outer summary: live and historical replies reuse the per-user controller, original reasoning details, and tool summaries; nodes stay in timeline order. Proof: tool-call-group unit tests and beautifului-polish E2E assertions. 2026-11-12: 11 controller tests passed; real device verification pending.

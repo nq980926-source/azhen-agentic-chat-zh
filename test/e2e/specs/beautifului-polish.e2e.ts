@@ -392,6 +392,7 @@ describe("agentic-chat beautifului polish", function () {
     await emit(toolEnd("group-2", "failed", true));
     await expect(summary).toHaveAttribute("aria-expanded", "true");
     await expect(summary).toHaveText(expect.stringContaining("2 次 · 1 次失败"));
+    await (await $$(".agentic-chat-activity-summary")).at(-1)!.click();
     await summary.click();
     const state = await browser.execute(() => ({
       collapsed: document.querySelectorAll(".agentic-chat-step-row.is-group-collapsed").length,
@@ -422,7 +423,9 @@ describe("agentic-chat beautifului polish", function () {
       const before = JSON.stringify(messages);
       view.renderTranscript(messages);
       return {
-        labels: Array.from(document.querySelectorAll(".agentic-chat-tool-summary")).map(el => el.textContent),
+        labels: Array.from(document.querySelectorAll(".agentic-chat-tool-summary:not(.agentic-chat-activity-summary)")).map(el => el.textContent),
+        outer: Array.from(document.querySelectorAll(".agentic-chat-activity-summary")).map(el => el.textContent),
+        order: Array.from(document.querySelectorAll(".agentic-chat-reasoning, .agentic-chat-step-row")).map(el => el.classList.contains("agentic-chat-reasoning") ? "thought" : "tool"),
         collapsed: document.querySelectorAll(".agentic-chat-step-row.is-group-collapsed").length,
         reasoning: document.querySelectorAll(".agentic-chat-reasoning").length,
         unchanged: JSON.stringify(messages) === before,
@@ -433,6 +436,14 @@ describe("agentic-chat beautifului polish", function () {
     expect(state.labels[1]).toContain("1 次 · 已完成");
     expect(state.collapsed).toBe(3);
     expect(state.reasoning).toBe(3);
+    expect(state.outer).toHaveLength(2);
+    expect(state.outer[0]).toContain("3 项 · 1 次失败");
+    expect(state.outer[1]).toContain("2 项 · 已完成");
+    expect(state.order).toEqual(["thought", "tool", "thought", "tool", "thought", "tool"]);
+    const outer = $(".agentic-chat-activity-summary");
+    await expect(outer).toHaveAttribute("aria-expanded", "false");
+    await outer.click();
+    await expect(outer).toHaveAttribute("aria-expanded", "true");
     expect(state.unchanged).toBe(true);
   });
 
