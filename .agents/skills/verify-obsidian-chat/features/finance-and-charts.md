@@ -60,3 +60,22 @@ app, Agentic Chat instance and Obsidian module): 3/3 passed with Charts 3.9.0-zh
 One live A–G set is recorded in CANDIDATE_PRESENTATION.md, including partial
 progress-bar consistency and financial coverage limitations. Android is unverified;
 this is not an autonomous-choice reliability guarantee or release approval.
+
+## Native progress extension (Windows candidate, 2026-11-13)
+
+Entry points: normal messages, shortcut conversations and restored history through
+an `agentic-progress` YAML Markdown processor registered by Agentic Chat.
+Witness: `test/progress-block.test.ts`; native probe must check actual progress
+values, invalid input, text-only labels, theme/width and persisted history.
+Finance complete-coverage proof continues to use the existing exact ledger fixture
+and original finance tool; no production financial calculation changes.
+
+Verified: 160 related tests passed (one pre-existing optional Memory online test
+skipped); Windows native assertions 8/8. Source probes are
+`test/native-progress-probe.cjs` and `test/native-presentation-probe.cjs`.
+`test/finance-presentation.test.ts` verifies the original tool's complete-coverage
+fixture: prose, chart values/categories, period and currency all share FinanceFact.
+One live five-scenario set selected native progress, a trend chart, and the original
+finance chart; ordinary advice and insufficient-data questions stayed non-graphical.
+See CANDIDATE_NATIVE_PROGRESS.md for fixture boundaries, rounding limits and costs.
+Android is unverified; no release or version change is authorized by this report.

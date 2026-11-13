@@ -1,28 +1,32 @@
+import {PROGRESS_LANGUAGE, renderProgressBlock} from "../ui/progress-block";
 import { MarkdownPreviewRenderer, type App } from "obsidian";
 
 export interface PresentationCapabilities {
   chart: boolean;
   advancedChart: boolean;
+  progress: boolean;
 }
 
 /** Read-only compatibility boundary: Obsidian exposes no public handler lookup.
  * Unknown registry shapes fail closed. Never register handlers or render probes.
  */
 export function readPresentationCapabilities(app: App): PresentationCapabilities {
-  const unavailable = { chart: false, advancedChart: false };
+  const unavailable = { chart: false, advancedChart: false, progress: false };
   try {
     const host = (app as App & {plugins?: {
       enabledPlugins?: Set<string>;
       plugins?: Record<string, {_loaded?: boolean}>;
     }}).plugins;
-    const plugin = host?.plugins?.["obsidian-charts"];
-    if (!host?.enabledPlugins?.has("obsidian-charts") || !plugin || plugin._loaded === false) return unavailable;
+    const loaded = (id: string) => host?.enabledPlugins?.has(id) === true &&
+      host.plugins?.[id] != null && host.plugins[id]._loaded !== false;
     const registry = (MarkdownPreviewRenderer as unknown as {
       codeBlockPostProcessors?: Record<string, unknown>;
     }).codeBlockPostProcessors;
     if (!registry || typeof registry !== "object" || Array.isArray(registry)) return unavailable;
     const registered = (language: string) => Object.prototype.hasOwnProperty.call(registry, language) && typeof registry[language] === "function";
-    return {chart: registered("chart"), advancedChart: registered("advanced-chart")};
+    return {chart: loaded("obsidian-charts") && registered("chart"),
+      advancedChart: loaded("obsidian-charts") && registered("advanced-chart"),
+      progress: loaded("agentic-chat") && registry[PROGRESS_LANGUAGE] === renderProgressBlock};
   } catch {
     return unavailable;
   }
@@ -32,10 +36,12 @@ export function readPresentationCapabilities(app: App): PresentationCapabilities
 export function presentationOverlay(capabilities: PresentationCapabilities): string {
   const parts = [
     "## Available presentation capabilities",
-    "Choose the presentation that helps the question; ordinary advice and discussion need no chart. Markdown text, lists, tables, emphasized numbers and text progress indicators are available without Charts. Use percentages only with a known completed value and target.",
-    "When useful: line for reliable time trends; bar (indexAxis: y for horizontal) for comparisons; pie/doughnut for a clearly defined whole; tables for detail. A missing generic drawing tool does not prevent Markdown chart rendering. No native progress/card components or calendar heatmap are advertised; do not rely on arbitrary HTML.",
-    "Use only supplied or actually retrieved data with matching period, units, categories and coverage. Missing dates are not zero; unknown targets give no completion percentage; do not invent trends. For finance, reuse azhen_finance_query's FinanceFact-derived text and chart unchanged, not a separate model calculation. General records have no guaranteed deterministic aggregation. Keep prose and chart values consistent; use zero-based bars and explicit denominators for proportions.",
+    "Choose the presentation that helps the question; ordinary advice and discussion need no chart. Markdown text, lists, tables, emphasized numbers and numeric completion summaries are available without Charts. Use percentages only with a known completed value and target.",
+    "When useful: line for reliable time trends; bar (indexAxis: y for horizontal) for comparisons; pie/doughnut for a clearly defined whole; tables for detail. A missing generic drawing tool does not prevent Markdown chart rendering. No statistical cards or calendar heatmap are advertised; do not rely on arbitrary HTML.",
+    "Use only supplied or actually retrieved data with matching period, units, categories and coverage. Missing dates are not zero; unknown targets give no completion percentage; do not invent trends. For finance, reuse azhen_finance_query's FinanceFact-derived text and chart unchanged, not a separate model calculation. General records have no guaranteed deterministic aggregation. Counts support frequency analysis, not claims about training quality, technique or movement completion without additional evidence. Keep prose and chart values consistent; use zero-based bars and explicit denominators for proportions.",
   ];
+  if (capabilities.progress) parts.push('Native progress is available as fenced agentic-progress YAML. Supply only current, total and optional label/unit; the plugin calculates percentage and graphical fill from those numbers. Prefer this over character-cell bars for goal progress; do not separately invent percentages. It validates display consistency, not business facts. Syntax example only:\n```agentic-progress\nlabel: Training\ncurrent: 8\ntotal: 12\nunit: days\n```');
+  else parts.push("Native progress rendering is unavailable or unconfirmed; use plain numeric completion summaries, not character-cell bars.");
   const formats = [capabilities.chart ? "chart YAML" : "", capabilities.advancedChart ? "advanced-chart JSON" : ""].filter(Boolean);
   if (!formats.length) {
     parts.push("Charts rendering is unavailable or unconfirmed in this environment. Use the available Markdown forms; do not claim Charts output will render.");

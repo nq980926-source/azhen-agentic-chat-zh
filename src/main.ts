@@ -1,3 +1,4 @@
+import {PROGRESS_LANGUAGE, renderProgressBlock} from "./ui/progress-block";
 import {
   Plugin,
   Notice,
@@ -64,6 +65,7 @@ export default class AgenticChatPlugin extends Plugin {
     this.register(() => { this.shortcutDisposed=true; this.shortcutRequests.clear(); });
     this.secretStore = new ObsidianSecretStore(this.app);
     await this.loadSettings();
+    this.registerMarkdownCodeBlockProcessor(PROGRESS_LANGUAGE, renderProgressBlock);
     // Scope the cross-window lease to this vault. Desktop uses the absolute
     // base path, which is identical in every window and avoids a first-load id
     // race. Mobile has one window; the generated id keeps same-named vaults
