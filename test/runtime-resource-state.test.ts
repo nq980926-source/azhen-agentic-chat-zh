@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { rm } from "node:fs/promises";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
-import type { App, DataAdapter } from "obsidian";
+import { MarkdownPreviewRenderer, type App, type DataAdapter } from "obsidian";
 import { DEFAULT_SETTINGS, type AgenticChatSettings } from "../src/settings";
 import { AgentRuntimeResourceState } from "../src/agent/runtime-resource-state";
 import { ReadMemo } from "../src/vault/read-memo";
@@ -170,5 +170,29 @@ describe("AgentRuntimeResourceState", () => {
 
     expect(restored).toEqual(expect.arrayContaining(["web_search", "fetch_url", "subagent"]));
     expect(state.getToolBudgetSnapshot()).toMatchObject({ active: false, droppedTools: [] });
+  });
+});
+
+describe("live presentation capabilities", () => {
+  it("refreshes Charts formats in the composed prompt without losing user or Skill context", async () => {
+    const app = await seededApp();
+    const plugin = {_loaded: true};
+    const host = {enabledPlugins: new Set(["obsidian-charts"]), plugins: {"obsidian-charts": plugin}};
+    Object.assign(app, {plugins: host});
+    (MarkdownPreviewRenderer as unknown as {codeBlockPostProcessors: unknown}).codeBlockPostProcessors = {chart: () => {}, "advanced-chart": () => {}};
+    const current = settings({systemPrompt: "User custom instructions", mode: "plan"});
+    const {state} = makeState(app, current);
+    await state.reload();
+    const on = state.composeSystemPrompt(current, "model");
+    expect(on).toContain("Available Charts formats: chart YAML; advanced-chart JSON.");
+    expect(on.startsWith("User custom instructions")).toBe(true);
+    expect(on).toContain("deep-research");
+    expect(on).toContain("## Project instructions");
+    host.enabledPlugins.clear();
+    expect(state.composeSystemPrompt(current, "model")).toContain("Charts rendering is unavailable or unconfirmed");
+    host.enabledPlugins.add("obsidian-charts");
+    expect(state.composeSystemPrompt(current, "model")).toContain("Available Charts formats: chart YAML; advanced-chart JSON.");
+    (MarkdownPreviewRenderer as unknown as {codeBlockPostProcessors: unknown}).codeBlockPostProcessors = undefined;
+    expect(state.composeSystemPrompt(current, "model")).toContain("Charts rendering is unavailable or unconfirmed");
   });
 });

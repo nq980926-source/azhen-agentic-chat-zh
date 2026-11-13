@@ -45,3 +45,18 @@ same Markdown shape produced by `azhen_finance_query`.
 - Missing ledger months produce partial coverage and no chart.
 - Large MCP receipts are read back through the existing artifact store.
 - Mermaid is not a fallback for this flow.
+
+## Runtime presentation discovery (candidate, 2026-11-13)
+
+Entry points: ordinary parent-chat requests and native shortcut new conversations.
+`src/agent/presentation-capabilities.ts` reads enabled/loaded Charts and each
+registered language through one guarded, read-only compatibility boundary.
+`runtime-resource-state.ts` supplies the bounded contract through the existing
+system overlay composition. No new tools, rendering, statistics or permissions.
+
+Proof: `test/presentation-capabilities.test.ts`, `test/runtime-resource-state.test.ts`;
+Windows native `test/native-presentation-probe.cjs` (isolated test plugin supplies
+app, Agentic Chat instance and Obsidian module): 3/3 passed with Charts 3.9.0-zh.1.
+One live A–G set is recorded in CANDIDATE_PRESENTATION.md, including partial
+progress-bar consistency and financial coverage limitations. Android is unverified;
+this is not an autonomous-choice reliability guarantee or release approval.

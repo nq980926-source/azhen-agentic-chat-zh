@@ -153,10 +153,12 @@ export function composeAgentSystemPrompt(
   skillLoads?: SkillLoadRegistry,
   longTermMemoryOverlay?: string,
   runtimeDateContext = "",
+  presentationContext = "",
 ): string {
   const overlays = [
     selfAwarenessOverlay,
     runtimeDateContext,
+    presentationContext,
     hasEnabledAzhenKnowledgeMcp(settings) ? AZHEN_KNOWLEDGE_PROMPT_OVERLAY : "",
     longTermMemoryOverlay ?? "",
     resources.instructionsOverlay,
@@ -175,6 +177,7 @@ export function composeCurrentAgentSystemPrompt(
   selfAwarenessOverlay: string,
   skillLoads?: SkillLoadRegistry,
   longTermMemoryOverlay?: string,
+  presentationContext = "",
 ): string {
   return composeAgentSystemPrompt(
     settings,
@@ -183,6 +186,7 @@ export function composeCurrentAgentSystemPrompt(
     skillLoads,
     longTermMemoryOverlay,
     buildRuntimeDateContext(),
+    presentationContext,
   );
 }
 

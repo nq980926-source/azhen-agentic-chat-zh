@@ -1,3 +1,4 @@
+import { readPresentationCapabilities, presentationOverlay } from "./presentation-capabilities";
 import type { App } from "obsidian";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { Skill } from "../skills/skill-prompt";
@@ -138,6 +139,7 @@ export class AgentRuntimeResourceState {
       this.selfAwarenessOverlay(activeModelId),
       this.skillLoads,
       this.azhenMemory?.composeSystemOverlay(),
+      presentationOverlay(readPresentationCapabilities(this.options.app)),
     );
   }
 

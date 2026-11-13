@@ -117,3 +117,7 @@ export function parseYaml(input: string): Record<string, unknown> {
   }
   return data;
 }
+
+export class MarkdownPreviewRenderer {
+  static codeBlockPostProcessors: unknown;
+}
