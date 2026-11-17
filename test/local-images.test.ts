@@ -24,24 +24,50 @@ describe("local image composer", () => {
     const image = {name:"a.png", size:8, mimeType:"image/png", data:"iVBORw0KGgo="};
     let count = 0;
     const service = { isStreaming:()=>false, isTurnInFlight:()=>false, supportsImages:()=>vision,
-      sendPrompt:vi.fn(async()=>{count++;}), getError:()=>error, getSessionToken:()=>"s", getMessages:()=>Array(count).fill({role:"user"}) };
+      sendPrompt:vi.fn(async(_p, _i, _s, _w, accepted)=>{count++; if (!error) accepted?.();}), getError:()=>error, getSessionToken:()=>"s", getMessages:()=>Array(count).fill({role:"user"}) };
     const tab = {service};
     // Prototype harness exercises the real private composer method.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const view: any = Object.assign(Object.create(ChatView.prototype), {
-      tabs:[tab], activeTabIndex:0, localImages:new WeakMap([[tab,[image]]]), imageSendBusy:false,
+      tabs:[tab], activeTabIndex:0, localImages:new WeakMap([[tab,[image]]]), imageSendBusy:false, composerRevision:new WeakMap(),
       promptEdit:{isEditing:false}, attachments:[], inputEl:{value:"说明"},
       preparePromptSend:vi.fn(async()=>({prompt:"说明",images:[],sessionToken:"s",messageCountBefore:0})),
-      effectiveActiveNote:()=>null, isLiveTab:()=>true, clearComposer:vi.fn(), renderTranscript:vi.fn(), renderChips:vi.fn(),
+      effectiveActiveNote:()=>null, isLiveTab:()=>true, clearComposer:vi.fn(), renderTranscript:vi.fn(), renderChips:vi.fn(), pushHistory:vi.fn(),
     });
     return {view,service,tab,image};
   }
   it("sends text and real images together using the existing service", async()=>{
     const {view,service,tab,image}=harness();
     await view.sendLocalImages("说明");
-    expect(service.sendPrompt).toHaveBeenCalledWith("说明",[{type:"image",data:image.data,mimeType:image.mimeType}],"s");
+    expect(service.sendPrompt).toHaveBeenCalledWith("说明",[{type:"image",data:image.data,mimeType:image.mimeType}],"s", false, expect.any(Function));
     expect(view.localImages.get(tab)).toEqual([]);
     expect(view.clearComposer).toHaveBeenCalledOnce();
+  });
+  it("clears on receipt while generation is still pending, without repainting history", async()=>{
+    const {view,service,tab}=harness();
+    let accept: (()=>void) | undefined;
+    let finish!: ()=>void;
+    service.sendPrompt.mockImplementation(async (_p, _i, _s, _w, received)=>{
+      accept=received; await new Promise<void>(r=>{finish=r;});
+    });
+    const sending=view.sendLocalImages("说明");
+    await Promise.resolve();
+    expect(view.clearComposer).not.toHaveBeenCalled();
+    expect(accept).toBeTypeOf("function");
+    accept!();
+    expect(view.localImages.get(tab)).toEqual([]);
+    expect(view.clearComposer).toHaveBeenCalledOnce();
+    expect(view.renderTranscript).not.toHaveBeenCalled();
+    finish(); await sending;
+  });
+  it("does not clear the same text retyped during preparation", async()=>{
+    const {view,service,tab}=harness();
+    service.sendPrompt.mockImplementation(async (_p, _i, _s, _w, accepted)=>{
+      view.composerRevision.set(tab, 1); accepted?.();
+    });
+    await view.sendLocalImages("说明");
+    expect(view.clearComposer).not.toHaveBeenCalled();
+    expect(view.localImages.get(tab)).toEqual([]);
   });
   it("retains image and text drafts on provider failure", async()=>{
     const {view,tab,image}=harness("network failed");
