@@ -7,7 +7,12 @@ class Node {
   classes = new Set<string>();
   attrs: Record<string, string> = {};
   click = () => {};
-  createEl() { const n = new Node(); n.parentElement = this; this.children.push(n); return n; }
+  get classList() { return {contains:(c:string)=>this.classes.has(c)}; }
+  closest(selector: string): Node | null {
+    if (this.classes.has(selector.slice(1))) return this;
+    return this.parentElement?.closest(selector) ?? null;
+  }
+  createEl(options?: {cls?:string}) { const n = new Node(); if(options?.cls) for(const c of options.cls.split(" ")) n.classes.add(c); n.parentElement = this; this.children.push(n); return n; }
   insertBefore(n: Node, before: Node) { this.children = this.children.filter(c => c !== n); this.children.splice(this.children.indexOf(before), 0, n); }
   addEventListener(_type: string, fn: () => void) { this.click = fn; }
   setText(s: string) { this.text = s; }
@@ -105,5 +110,22 @@ describe("thought and tool outer summary", () => {
     reasoning(other,q); p.children[0].click();
     expect(p.children[0].text).toContain("1 项");
     expect(q.children[1].classes.has("is-activity-collapsed")).toBe(true);
+  });
+});
+
+describe("collapsed assistant shells", () => {
+  it("hides a later reasoning-only shell, preserving the first expansion entry", () => {
+    const g=new ToolCallGroup(), first=new Node(), later=new Node();
+    first.classes.add("agentic-chat-assistant"); later.classes.add("agentic-chat-assistant");
+    const a=first.createEl(), b=later.createEl();
+    a.classes.add("agentic-chat-reasoning"); b.classes.add("agentic-chat-reasoning");
+    g.reasoning(a as unknown as HTMLElement,true);
+    g.reasoning(b as unknown as HTMLElement,true);
+    g.finish();
+    expect(later.classes.has("is-visual-empty")).toBe(true);
+    expect(first.classes.has("is-visual-empty")).toBe(false);
+    first.children[0].click();
+    expect(later.classes.has("is-visual-empty")).toBe(false);
+    expect(later.children).toContain(b);
   });
 });
