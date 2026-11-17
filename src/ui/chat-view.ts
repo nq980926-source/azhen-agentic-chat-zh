@@ -422,7 +422,7 @@ export class ChatView extends ItemView {
     this.lastCompactionCount = state.lastCompactionCount;
     this.lastSentPrompt = state.lastSentPrompt;
     this.lastSentDisplay = state.lastSentDisplay;
-    this.setComposerValueQuiet(state.draft);
+    this.setComposerValueQuiet(state.draft, true);
   }
 
   /** Re-render the transcript + chrome for the active tab (after a switch/close). */
@@ -838,6 +838,7 @@ export class ChatView extends ItemView {
     // Real user typing both refreshes autocomplete and abandons history navigation.
     // Programmatic value changes (recall) set `.value` directly without an input event.
     this.inputEl.addEventListener("input", (event) => {
+      this.bumpComposerRevision();
       this.resizeInput();
       this.resetHistoryNav();
       // Composition (IME) inputs may briefly leave the value empty; don't drop a
@@ -1052,6 +1053,7 @@ export class ChatView extends ItemView {
     for (const suggestion of suggestions) {
       const chip = row.createEl("button", { cls: "agentic-chat-empty-suggestion", text: suggestion });
       chip.addEventListener("click", () => {
+        this.bumpComposerRevision();
         this.inputEl.value = suggestion;
         void this.submit();
       });
@@ -1113,6 +1115,7 @@ export class ChatView extends ItemView {
   private chooseAutocomplete(item: AcItem): void {
     if (!this.activeQuery) return;
     const result = resolve(this.inputEl.value, this.activeQuery, item);
+    this.bumpComposerRevision();
     this.inputEl.value = result.text;
     this.inputEl.setSelectionRange(result.caret, result.caret);
     this.inputEl.focus();
@@ -1435,6 +1438,7 @@ export class ChatView extends ItemView {
 
   private localImages = new WeakMap<ChatTab, LocalImageAttachment[]>();
   private imageSendBusy = false;
+  private composerRevision = new WeakMap<ChatTab, number>();
   private imageReads = 0;
 
   private async pickImages(files: File[], tab: ChatTab): Promise<void> {
@@ -1479,6 +1483,11 @@ export class ChatView extends ItemView {
       return;
     }
     const images = [...(this.localImages.get(tab) ?? [])];
+    const revision = this.composerRevision.get(tab) ?? 0;
+    const rawDraft = this.inputEl.value;
+    let accepted = false;
+    const activeNoteCache = this.activeNoteCache;
+    const contextCache = this.contextCache;
     this.imageSendBusy = true;
     try {
       const prepared = await this.preparePromptSend(tab, service, this.activeNoteCache,
@@ -1486,19 +1495,34 @@ export class ChatView extends ItemView {
       if (!prepared) return;
       if (!service.supportsImages()) throw new Error("当前模型不支持图片");
       await service.sendPrompt(prepared.prompt, [...prepared.images,
-        ...images.map(({ data, mimeType }): ImageContent => ({ type: "image", data, mimeType }))], prepared.sessionToken);
-      if (service.getError()) throw new Error(service.getError());
-      if (service.getSessionToken() !== prepared.sessionToken) throw new Error("会话已切换，图片草稿已保留");
-      if (service.getMessages().length <= prepared.messageCountBefore) throw new Error("图片消息未发送，草稿已保留");
-      const remaining = (this.localImages.get(tab) ?? []).filter((item) => !images.includes(item));
-      this.localImages.set(tab, remaining);
-      if (this.isLiveTab(tab)) {
-        if (this.inputEl.value.trim() === text) this.clearComposer();
-        this.renderTranscript(service.getMessages());
-        this.renderChips();
-      }
+        ...images.map(({ data, mimeType }): ImageContent => ({ type: "image", data, mimeType }))], prepared.sessionToken, false, () => {
+        if (accepted) return;
+        accepted = true;
+        this.localImages.set(tab, (this.localImages.get(tab) ?? []).filter(item => !images.includes(item)));
+        activeNoteCache?.commitPending();
+        contextCache?.commit();
+        const unchanged = (this.composerRevision.get(tab) ?? 0) === revision;
+        if (this.isLiveTab(tab)) {
+          if (unchanged && this.inputEl.value === rawDraft) this.clearComposer();
+          this.lastSentPrompt = prepared.prompt;
+          this.lastSentDisplay = text;
+          this.pushHistory(text);
+          this.renderChips();
+        } else {
+          if (unchanged && tab.state.draft === rawDraft) tab.state.draft = "";
+          tab.state.lastSentPrompt = prepared.prompt;
+          tab.state.lastSentDisplay = text;
+        }
+      });
+      if (!accepted) throw new Error(service.getError() || "图片消息未接收");
+      if (this.isLiveTab(tab)) this.showServiceError();
     } catch (error) {
-      new Notice(`发送失败，文字和图片草稿已保留：${error instanceof Error ? error.message : "未知错误"}`);
+      if (!accepted) {
+        this.discardPendingSend(activeNoteCache, contextCache);
+        new Notice(`发送失败，文字和图片草稿已保留：${error instanceof Error ? error.message : "未知错误"}`);
+      } else if (this.isLiveTab(tab)) {
+        this.showServiceError();
+      }
     } finally {
       this.imageSendBusy = false;
     }
@@ -1563,7 +1587,13 @@ export class ChatView extends ItemView {
     await this.sendPrompt(text);
   }
 
+  private bumpComposerRevision(): void {
+    const tab = this.activeTab;
+    this.composerRevision.set(tab, (this.composerRevision.get(tab) ?? 0) + 1);
+  }
+
   private clearComposer(): void {
+    this.bumpComposerRevision();
     this.inputEl.value = "";
     this.resizeInput();
   }
@@ -1672,7 +1702,8 @@ export class ChatView extends ItemView {
    * doesn't reset its own navigation state. Places the caret at the end and hides
    * the autocomplete menu.
    */
-  private setComposerValueQuiet(value: string): void {
+  private setComposerValueQuiet(value: string, restoring = false): void {
+    if (!restoring) this.bumpComposerRevision();
     this.inputEl.value = value;
     this.inputEl.setSelectionRange(value.length, value.length);
     this.menu.hide();

@@ -12,7 +12,7 @@ class Node {
     if (this.classes.has(selector.slice(1))) return this;
     return this.parentElement?.closest(selector) ?? null;
   }
-  createEl(options?: {cls?:string}) { const n = new Node(); if(options?.cls) for(const c of options.cls.split(" ")) n.classes.add(c); n.parentElement = this; this.children.push(n); return n; }
+  createEl(_tag?: string, options?: {cls?:string}) { const n = new Node(); if(options?.cls) for(const c of options.cls.split(" ")) n.classes.add(c); n.parentElement = this; this.children.push(n); return n; }
   insertBefore(n: Node, before: Node) { this.children = this.children.filter(c => c !== n); this.children.splice(this.children.indexOf(before), 0, n); }
   addEventListener(_type: string, fn: () => void) { this.click = fn; }
   setText(s: string) { this.text = s; }
@@ -100,7 +100,7 @@ describe("thought and tool outer summary", () => {
   it("does not count empty status shells as reasoning or show an empty summary", () => {
     const g = new ToolCallGroup(), p = new Node(); const empty = p.createEl();
     g.reasoning(empty as unknown as HTMLElement, false);
-    expect(p.children).toEqual([empty]); expect(empty.classes.has("is-activity-collapsed")).toBe(true);
+    expect(p.children).toEqual([empty]); expect(empty.classes.has("is-activity-collapsed")).toBe(false);
     add(g,p,"tool"); expect(p.children[1].text).toContain("工具调用 · 1 次");
     expect(p.children).toHaveLength(3);
   });

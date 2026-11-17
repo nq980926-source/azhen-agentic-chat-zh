@@ -25,14 +25,14 @@ describe("local image composer", () => {
     let count = 0;
     const service = { isStreaming:()=>false, isTurnInFlight:()=>false, supportsImages:()=>vision,
       sendPrompt:vi.fn(async(_p, _i, _s, _w, accepted)=>{count++; if (!error) accepted?.();}), getError:()=>error, getSessionToken:()=>"s", getMessages:()=>Array(count).fill({role:"user"}) };
-    const tab = {service};
+    const tab = {service,state:{draft:"说明"}};
     // Prototype harness exercises the real private composer method.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const view: any = Object.assign(Object.create(ChatView.prototype), {
       tabs:[tab], activeTabIndex:0, localImages:new WeakMap([[tab,[image]]]), imageSendBusy:false, composerRevision:new WeakMap(),
       promptEdit:{isEditing:false}, attachments:[], inputEl:{value:"说明"},
       preparePromptSend:vi.fn(async()=>({prompt:"说明",images:[],sessionToken:"s",messageCountBefore:0})),
-      effectiveActiveNote:()=>null, isLiveTab:()=>true, clearComposer:vi.fn(), renderTranscript:vi.fn(), renderChips:vi.fn(), pushHistory:vi.fn(),
+      effectiveActiveNote:()=>null, isLiveTab:()=>true, clearComposer:vi.fn(), renderTranscript:vi.fn(), renderChips:vi.fn(), pushHistory:vi.fn(), discardPendingSend:vi.fn(), showServiceError:vi.fn(),
     });
     return {view,service,tab,image};
   }
@@ -42,6 +42,14 @@ describe("local image composer", () => {
     expect(service.sendPrompt).toHaveBeenCalledWith("说明",[{type:"image",data:image.data,mimeType:image.mimeType}],"s", false, expect.any(Function));
     expect(view.localImages.get(tab)).toEqual([]);
     expect(view.clearComposer).toHaveBeenCalledOnce();
+  });
+  it.each([1,2,4])("sends %i images exactly once",async count=>{
+    const {view,service,tab,image}=harness();
+    const images=Array.from({length:count},(_,i)=>({...image,data:String(i),name:`${i}.png`}));
+    view.localImages.set(tab,images);
+    await view.sendLocalImages("说明");
+    expect(service.sendPrompt.mock.calls[0][1]).toEqual(images.map(({data,mimeType})=>({type:"image",data,mimeType})));
+    expect(view.localImages.get(tab)).toEqual([]);
   });
   it("clears on receipt while generation is still pending, without repainting history", async()=>{
     const {view,service,tab}=harness();
@@ -68,6 +76,30 @@ describe("local image composer", () => {
     await view.sendLocalImages("说明");
     expect(view.clearComposer).not.toHaveBeenCalled();
     expect(view.localImages.get(tab)).toEqual([]);
+  });
+  it("clears only the original tab draft after switching tabs", async()=>{
+    const {view,service,tab}=harness();
+    service.sendPrompt.mockImplementation(async (_p,_i,_s,_w,accepted)=>{
+      view.isLiveTab=()=>false;
+      view.inputEl.value="other tab";
+      accepted?.();
+    });
+    await view.sendLocalImages("说明");
+    expect(tab.state.draft).toBe("");
+    expect(view.inputEl.value).toBe("other tab");
+    expect(view.clearComposer).not.toHaveBeenCalled();
+  });
+  it("keeps new images and the execution snapshot after receipt and a model failure",async()=>{
+    const {view,service,tab,image}=harness("model failed");
+    const next={...image,name:"next.png"};
+    service.sendPrompt.mockImplementation(async (_p,images,_s,_w,accepted)=>{
+      view.localImages.get(tab).push(next);
+      accepted?.();
+      expect(images).toEqual([{type:"image",data:image.data,mimeType:image.mimeType}]);
+    });
+    await view.sendLocalImages("说明");
+    expect(view.localImages.get(tab)).toEqual([next]);
+    expect(view.clearComposer).toHaveBeenCalledOnce();
   });
   it("retains image and text drafts on provider failure", async()=>{
     const {view,tab,image}=harness("network failed");

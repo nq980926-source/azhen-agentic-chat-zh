@@ -102,3 +102,11 @@ await $(".agentic-chat-send").click();
 - Preview/remove and byte deduplication are local; sending reuses ImageContent and AgentService.
 - `test/local-images.test.ts`: encoding, validation, service wiring, vision guard, draft retention, keyboard gate (unit).
 - Native Windows picker, Android picker/IME and live provider recognition remain unverified.
+
+
+## 0.51.26 UI receipt and collapsed shells (2026-11-17)
+
+- Image receipt cleanup uses exact submitted message identity; revision guards preserve subsequent drafts.
+- Collapsed assistant shells follow meaningful visible content without removing activity records.
+- Proof: test/local-images.test.ts, test/agent-service.test.ts, test/tool-call-group.test.ts; scripted real Obsidian probe test/e2e/ui-receipt-layout.cdp.mjs.
+- Windows desktop and 390x844 viewport checks pass; Android device/IME and live provider acceptance remain pending. See release/0.51.26-ui-test.1/TEST_REPORT.md.

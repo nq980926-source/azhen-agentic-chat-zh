@@ -2484,3 +2484,6 @@ body.is-phone .agentic-chat-field {
 .agentic-progress-meter::-webkit-progress-value {background:var(--interactive-accent);border-radius:6px}
 .agentic-progress-meter::-moz-progress-bar {background:var(--interactive-accent);border-radius:6px}
 .agentic-progress-error {color:var(--text-muted);overflow-wrap:anywhere}
+
+/* Only assistant shells whose meaningful content is folded away. */
+.agentic-chat-assistant.is-visual-empty { display: none; }

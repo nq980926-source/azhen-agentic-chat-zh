@@ -1,3 +1,5 @@
+import { syncAssistantVisibility } from "./assistant-visibility";
+
 /** Display-only state shared by assistant bubbles until the next user message.
  * Rows stay in their original timeline positions, including interleaved reasoning.
  */
@@ -82,17 +84,23 @@ export class ToolCallGroup {
     const thoughts = [...this.thoughts.values()].filter(thought => thought.content);
     const hidden = !!this.outer && !this.outerOpen;
     if (this.outer) {
-      const thinking = thoughts.some(thought => thought.running);
+      const thinking = [...this.thoughts.values()].some(thought => thought.running);
       const outerStatus = [stopped ? "未完成" : "", thinking || running ? "进行中" : "", failures ? `${failures} 次失败` : ""].filter(Boolean).join(" · ") || "已完成";
       this.outer.setText(`${this.outerOpen ? "▾" : "▸"} 思考与工具调用 · ${thoughts.length + (calls.length ? 1 : 0)} 项 · ${outerStatus}`);
       this.outer.setAttribute("aria-expanded", String(this.outerOpen));
       this.outer.toggleClass("is-error", failures > 0);
     }
     this.summary?.toggleClass("is-activity-collapsed", hidden);
-    for (const [row, thought] of this.thoughts) row.toggleClass("is-activity-collapsed", !thought.content || hidden);
+    for (const [row, thought] of this.thoughts) row.toggleClass("is-activity-collapsed", (!thought.content && !thought.running) || hidden);
     for (const call of calls) {
       call.row.toggleClass("is-group-collapsed", !this.open);
       call.row.toggleClass("is-activity-collapsed", hidden);
     }
+    const owners = new Set<HTMLElement>();
+    for (const row of [...this.thoughts.keys(), ...calls.map(call => call.row)]) {
+      const owner = row.closest?.<HTMLElement>(".agentic-chat-assistant");
+      if (owner) owners.add(owner);
+    }
+    for (const owner of owners) syncAssistantVisibility(owner);
   }
 }

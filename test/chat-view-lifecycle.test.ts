@@ -9,6 +9,7 @@ describe("ChatView async lifecycle", () => {
     const view = Object.assign(Object.create(ChatView.prototype), {
       queuedPromptArmed: true,
       flushingQueuedPrompt: false,
+      composerRevision: new WeakMap(),
       inputEl: { value: "stale queued draft" },
       tabs: [{ service: { isStreaming: () => false, getSessionSwapState: () => "live", sendPrompt } }],
       activeTabIndex: 0,
@@ -58,6 +59,7 @@ describe("ChatView async lifecycle", () => {
     const view = Object.assign(Object.create(ChatView.prototype), {
       queuedPromptArmed: true,
       flushingQueuedPrompt: false,
+      composerRevision: new WeakMap(),
       inputEl: { value: "stale queued draft" },
       tabs: [
         {
@@ -89,6 +91,7 @@ describe("ChatView async lifecycle", () => {
     const view = Object.assign(Object.create(ChatView.prototype), {
       queuedPromptArmed: true,
       flushingQueuedPrompt: false,
+      composerRevision: new WeakMap(),
       inputEl: { value: "queued draft" },
       tabs: [
         {

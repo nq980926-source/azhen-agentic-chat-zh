@@ -1,3 +1,4 @@
+import { syncAssistantVisibility } from "./assistant-visibility";
 import { ToolCallGroup } from "./tool-call-group";
 import { type App, type Component, loadMermaid, MarkdownRenderer, Notice, setIcon } from "obsidian";
 import type { Usage } from "@earendil-works/pi-ai";
@@ -126,6 +127,7 @@ export class AssistantBubble {
   private syncTextEmpty(): void {
     const empty = (this.textEl.textContent ?? "").trim().length === 0 && this.textEl.childElementCount === 0;
     this.textEl.toggleClass("is-empty", empty);
+    syncAssistantVisibility(this.el);
   }
 
   appendText(delta: string): void {
@@ -745,6 +747,7 @@ export class AssistantBubble {
     this.finalized = true;
     this.settleReasoning();
     this.renderSourceChips();
+    syncAssistantVisibility(this.el);
   }
 
   /**
@@ -806,6 +809,7 @@ export class AssistantBubble {
       retry.addEventListener("click", () => this.actions.onRetry?.());
     }
     this.el.insertBefore(banner, this.actionsEl);
+    syncAssistantVisibility(this.el);
   }
 
   /**
@@ -837,6 +841,7 @@ export class AssistantBubble {
     });
     setIcon(button, icon);
     button.addEventListener("click", onClick);
+    syncAssistantVisibility(this.el);
   }
 
   private async copy(): Promise<void> {

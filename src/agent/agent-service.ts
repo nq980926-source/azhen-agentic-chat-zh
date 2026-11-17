@@ -511,11 +511,26 @@ export class AgentService {
     }
   }
 
-  async sendPrompt(prompt: string, images?: ImageContent[], expectedSessionToken?: string, preserveWhitespace = false): Promise<void> {
+  async sendPrompt(prompt: string, images?: ImageContent[], expectedSessionToken?: string, preserveWhitespace = false, onAccepted?: () => void): Promise<void> {
     const trimmed = preserveWhitespace ? prompt : prompt.trim();
     if (!trimmed) return;
     const attached = images && images.length > 0 ? images : undefined;
-    await this.runPrompt((agent) => agent.prompt(trimmed, attached), expectedSessionToken);
+    if (!onAccepted) {
+      await this.runPrompt((agent) => agent.prompt(trimmed, attached), expectedSessionToken);
+      return;
+    }
+    // Identity, rather than text/count, ties receipt to this exact submission.
+    const message = createUserMessage(trimmed, attached);
+    await this.runPrompt(async (agent) => {
+      let accepted = false;
+      const off = this.onEvent((event) => {
+        if (!accepted && event.type === "message_end" && event.message === message) {
+          accepted = true;
+          onAccepted();
+        }
+      });
+      try { await agent.prompt(message); } finally { off(); }
+    }, expectedSessionToken);
   }
 
   /** Session path + explicit operation epoch, for stale-send guards. */

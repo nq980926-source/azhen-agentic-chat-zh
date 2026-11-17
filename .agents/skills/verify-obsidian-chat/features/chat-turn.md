@@ -100,3 +100,11 @@ UI assertion: `test/e2e/specs/beautifului-polish.e2e.ts` (groups tools test).
 Status: partial until real Windows and Android UI verification.
 
 Thought/tool outer summary: live and historical replies reuse the per-user controller, original reasoning details, and tool summaries; nodes stay in timeline order. Proof: tool-call-group unit tests and beautifului-polish E2E assertions. 2026-11-12: 11 controller tests passed; real device verification pending.
+
+
+## 0.51.26 UI receipt and collapsed shells (2026-11-17)
+
+- Image receipt cleanup uses exact submitted message identity; revision guards preserve subsequent drafts.
+- Collapsed assistant shells follow meaningful visible content without removing activity records.
+- Proof: test/local-images.test.ts, test/agent-service.test.ts, test/tool-call-group.test.ts; scripted real Obsidian probe test/e2e/ui-receipt-layout.cdp.mjs.
+- Windows desktop and 390x844 viewport checks pass; Android device/IME and live provider acceptance remain pending. See release/0.51.26-ui-test.1/TEST_REPORT.md.

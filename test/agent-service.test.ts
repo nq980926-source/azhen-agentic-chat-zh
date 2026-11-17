@@ -261,6 +261,36 @@ function vaultBackedApp(): { app: App; vault: FakeVault } {
 }
 
 describe("AgentService", () => {
+  it("acknowledges the exact multimodal user message before generation finishes", async () => {
+    const controlled = controlledStreamFn(["answer"]);
+    const {service} = makeService(controlled.streamFn);
+    let receipts = 0;
+    const images = [{type:"image" as const, data:"aGVsbG8=", mimeType:"image/png"}];
+    const sending = service.sendPrompt("same text", images, undefined, false, () => {
+      receipts++;
+      const user = service.getMessages().at(-1);
+      expect(user?.role).toBe("user");
+      expect(user?.content).toEqual([{type:"text",text:"same text"}, ...images]);
+    });
+    await waitFor(() => controlled.runs.length === 1, "image stream starts");
+    expect(receipts).toBe(1);
+    expect(service.isTurnInFlight()).toBe(true);
+    service.abort(); await sending;
+    expect(receipts).toBe(1);
+  });
+
+  it("does not acknowledge a rejected send or reuse a previous receipt",async()=>{
+    const {service,settings}=makeService(cannedStreamFn("ok"));
+    let first=0,second=0;
+    settings.openrouterApiKey="";
+    await service.sendPrompt("same",undefined,undefined,false,()=>{first++;});
+    expect(first).toBe(0);
+    settings.openrouterApiKey="test-key";
+    await service.sendPrompt("same",undefined,undefined,false,()=>{first++;});
+    await service.sendPrompt("same",undefined,undefined,false,()=>{second++;});
+    expect(first).toBe(1);expect(second).toBe(1);
+  });
+
   it("runs a prompt, exposes the transcript, and tracks usage", async () => {
     const { service } = makeService(cannedStreamFn("Hello from the agent."));
     await service.sendPrompt("Say hello");
