@@ -617,6 +617,18 @@ export class AgenticChatSettingTab extends PluginSettingTab {
 
   private renderAgent(containerEl: HTMLElement, settings: AgenticChatSettings): void {
     new Setting(containerEl).setName(t("settings.tabs.agent")).setHeading();
+    new Setting(containerEl)
+      .setName("知识库工作模式")
+      .setDesc("本地只操作当前设备的 Obsidian Vault；腾讯云沿用 Knowledge MCP。Memory 与联网搜索保持独立。切换不迁移或同步文件。" +
+        (settings.knowledgeModeMigration ? ` 升级时识别的原写入位置：${settings.knowledgeModeMigration === "cloud" ? "腾讯云" : "本地"}。` : ""))
+      .addDropdown(dropdown => {
+        dropdown.addOption("local", "本地知识库").addOption("cloud", "腾讯云知识库")
+          .setValue(settings.knowledgeMode).onChange(async value => {
+            if (value !== "local" && value !== "cloud") return;
+            await this.plugin.requestKnowledgeModeChange(value);
+            dropdown.setValue(this.plugin.settings.knowledgeMode);
+          });
+      });
 
     new Setting(containerEl)
       .setName(t("settings.permissionMode"))

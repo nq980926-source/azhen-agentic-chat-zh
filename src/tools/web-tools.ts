@@ -12,7 +12,7 @@ export const WEB_TOOL_NAMES = new Set(["web_search", "fetch_url"]);
  * The enable toggle is the egress gate: these tools send data off-device, so when
  * it's off they are not registered at all and the model can't reach the network.
  */
-export function createWebTools(settings: WebSettings, fetcher: WebFetcher, artifactStore?: ToolArtifactStoreLike): AgentTool[] {
+export function createWebTools(settings: WebSettings, fetcher: WebFetcher, artifactStore?: ToolArtifactStoreLike, canFetch?: (url: string) => boolean): AgentTool[] {
   if (!settings.enabled) return [];
   return [
     createWebSearchTool({
@@ -22,6 +22,6 @@ export function createWebTools(settings: WebSettings, fetcher: WebFetcher, artif
       maxResults: settings.maxResults,
       fetcher,
     }),
-    createWebFetchTool({ fetcher, charLimit: settings.fetchCharLimit, artifactStore, allowedHosts: settings.allowedHosts, deepSeekApiKey: settings.searchProvider === "deepseek" ? settings.searchApiKey : undefined }),
+    createWebFetchTool({ fetcher, canFetch, charLimit: settings.fetchCharLimit, artifactStore, allowedHosts: settings.allowedHosts, deepSeekApiKey: settings.searchProvider === "deepseek" ? settings.searchApiKey : undefined }),
   ];
 }

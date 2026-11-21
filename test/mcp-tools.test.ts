@@ -446,3 +446,20 @@ describe("MCP tools", () => {
     expect(result.details).not.toHaveProperty("structuredContent");
   });
 });
+
+
+describe("knowledge execution revocation", () => {
+  it("blocks a previously registered MCP tool before any RPC after local-mode revocation", async () => {
+    let allowed = true;
+    const requests: WebHttpRequest[] = [];
+    const tools = await createMcpTools(mcpSettings(), queuedFetcher([
+      rpc(1, { protocolVersion: "2025-11-25", capabilities: {}, serverInfo: { name: "test", version: "1" } }),
+      { status: 202, text: "", headers: {} },
+      rpc(2, { tools: [{ name: "read_file", inputSchema: { type: "object", properties: {} } }] }),
+    ], requests), { canExecute: () => allowed });
+    expect(tools).toHaveLength(1);
+    const before = requests.length; allowed = false;
+    await expect(tools[0]!.execute("old", {})).rejects.toThrow(/blocks/);
+    expect(requests).toHaveLength(before);
+  });
+});

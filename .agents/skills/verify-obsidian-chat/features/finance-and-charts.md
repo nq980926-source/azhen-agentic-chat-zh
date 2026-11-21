@@ -31,8 +31,8 @@ same Markdown shape produced by `azhen_finance_query`.
 
 | entry point | source | proof | status |
 |---|---|---|---|
-| Exact ledger parsing and `FinanceFact` | `src/finance/azhen-finance.ts:239`; `src/finance/azhen-finance.ts:311` | `test/azhen-finance.test.ts:90`; 22-purpose fallback at `test/azhen-finance.test.ts:225` | `covered` |
-| Finance query tool and chart payload | `src/tools/azhen-finance-tools.ts:67`; `src/tools/azhen-finance-tools.ts:87` | `test/azhen-finance-tools.test.ts:74`; crowded-chart fallback at `test/azhen-finance-tools.test.ts:293` | `covered` |
+| Exact ledger parsing and `FinanceFact` | `src/finance/azhen-finance.ts:239`; `src/finance/azhen-finance.ts:311` | `test/azhen-finance.test.ts:91`; 22-purpose fallback at `test/azhen-finance.test.ts:225` | `partial` |
+| Finance query tool and chart payload | `src/tools/azhen-finance-tools.ts:67`; `src/tools/azhen-finance-tools.ts:87` | `test/azhen-finance-tools.test.ts:75`; crowded-chart fallback at `test/azhen-finance-tools.test.ts:294` | `partial` |
 | Charts Markdown in chat | `src/ui/assistant-bubble.ts:717` | `test/e2e/specs/finance-charts.e2e.ts:231` | `covered` |
 
 ## Gotchas

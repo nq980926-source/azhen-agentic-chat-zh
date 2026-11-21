@@ -13,6 +13,7 @@ export interface VaultPathOptions {
  * the vault, and (by default) blocks the plugin's own internals.
  */
 export function normalizeVaultPath(input: string, options: VaultPathOptions = {}): string {
+  if (input.includes(":") || Array.from(input).some(char => char.charCodeAt(0) < 32 || char.charCodeAt(0) === 127)) throw new Error("Path must be a plain Vault-relative path, without drive, URL or control characters.");
   const withoutAt = stripLeadingAt(input.trim());
   const withForwardSlashes = withoutAt.replaceAll("\\", "/");
 
@@ -54,6 +55,7 @@ function collapsePathSegments(path: string): string {
     if (segment === "..") {
       throw new Error("Path must not contain '..' segments.");
     }
+    if (segment.endsWith(".") || segment.endsWith(" ")) throw new Error("Ambiguous trailing dot or space in path.");
     segments.push(segment);
   }
   return segments.join("/");

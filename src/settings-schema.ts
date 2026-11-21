@@ -1,3 +1,4 @@
+import { migrateKnowledgeMode, type KnowledgeMode } from "./agent/knowledge-mode";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import {
   DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
@@ -84,6 +85,8 @@ export interface AgenticChatSettings {
    * mutating tools. `plan` (read-only) is reached via the `/plan` command, not this default.
    */
   mode: AgentMode;
+  knowledgeMode: KnowledgeMode;
+  knowledgeModeMigration?: "local" | "cloud";
   /** How the assistant talks: a built-in system-prompt overlay. */
   outputStyle: OutputStyle;
   privacy: PrivacySettings;
@@ -186,6 +189,7 @@ export const DEFAULT_SETTINGS: AgenticChatSettings = {
   maxNetworkRetries: 2,
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
   mode: DEFAULT_MODE,
+  knowledgeMode: "local",
   outputStyle: DEFAULT_OUTPUT_STYLE,
   // Strongest privacy out of the box: zero data retention, no prompt
   // logging/training, and any fallback provider must also satisfy both.
@@ -251,6 +255,8 @@ export function mergeSettings(stored: Partial<AgenticChatSettings> | null | unde
     ),
     openaiCompatibleApiKey: typeof stored?.openaiCompatibleApiKey === "string" ? stored.openaiCompatibleApiKey : "",
     mode: healMode(stored?.mode),
+    knowledgeMode: migrateKnowledgeMode(stored, { mcp: healedMcp, plugins: healedPlugins }),
+    knowledgeModeMigration: stored?.knowledgeModeMigration ?? (stored && Object.keys(stored).length > 0 && !stored.knowledgeMode ? migrateKnowledgeMode(stored, { mcp: healedMcp, plugins: healedPlugins }) : undefined),
     openaiCompatibleContextWindow: healContextWindow(stored?.openaiCompatibleContextWindow),
     outputStyle:
       stored?.outputStyle && stored.outputStyle in OUTPUT_STYLES ? stored.outputStyle : DEFAULT_OUTPUT_STYLE,

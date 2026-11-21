@@ -41,6 +41,7 @@ function makeController(
 ): { controller: AgentToolCallController; requests: ToolApprovalRequest[]; undoNotifications: { count: number } } {
   const settings: AgenticChatSettings = {
     ...DEFAULT_SETTINGS,
+    knowledgeMode: "local",
     openrouterApiKey: "test-key",
     ...options.settings,
     approval: { ...DEFAULT_SETTINGS.approval, ...(options.settings?.approval ?? {}) },
@@ -531,7 +532,7 @@ describe("AgentToolCallController", () => {
     expect(requests[0]?.toolName).toBe("delete");
   });
 
-  it("auto-approves non-recursive delete in yolo mode", async () => {
+  it("asks for local deletion even in yolo mode", async () => {
     const { controller, requests } = makeController({
       settings: { mode: "yolo", approval: { mutating: "allow", perTool: {}, workingDirs: [] } },
     });
@@ -540,10 +541,10 @@ describe("AgentToolCallController", () => {
       args: { path: "Note.md" },
     });
     expect(decision).toBeUndefined();
-    expect(requests).toHaveLength(0);
+    expect(requests).toHaveLength(1);
   });
 
-  it("honors an explicit per-tool allow for recursive delete", async () => {
+  it("requires per-path local deletion approval despite standing allow", async () => {
     const { controller, requests } = makeController({
       settings: { mode: "yolo", approval: { mutating: "allow", perTool: { delete: "allow" }, workingDirs: [] } },
     });
@@ -552,7 +553,7 @@ describe("AgentToolCallController", () => {
       args: { path: "Full", recursive: true },
     });
     expect(decision).toBeUndefined();
-    expect(requests).toHaveLength(0);
+    expect(requests).toHaveLength(1);
   });
 
   it("denies create_skill in plan mode", async () => {    const { controller } = makeController({
@@ -588,6 +589,7 @@ describe("AgentToolCallController", () => {
 
     for (const serverId of knowledgeServerIds) {
       const knowledgeSettings: Partial<AgenticChatSettings> = {
+        knowledgeMode: "cloud",
         mcp: {
           enabled: true,
           proxyUrl: "",
@@ -662,6 +664,7 @@ describe("AgentToolCallController", () => {
     for (const serverId of knowledgeServerIds) {
       const { controller, requests } = makeController({
         settings: {
+          knowledgeMode: "cloud",
           mcp: {
             enabled: true,
             proxyUrl: "",
@@ -714,6 +717,7 @@ describe("AgentToolCallController", () => {
       for (const serverId of knowledgeServerIds) {
         const { controller } = makeController({
           settings: {
+          knowledgeMode: "cloud",
             mcp: { enabled: true, proxyUrl: "", noProxy: "", servers: [] },
             plugins: {
               ...DEFAULT_SETTINGS.plugins,
@@ -749,6 +753,7 @@ describe("AgentToolCallController", () => {
       })) as AgentTool[];
       const { controller, requests } = makeController({
         settings: {
+          knowledgeMode: "cloud",
           mcp: { enabled: true, proxyUrl: "", noProxy: "", servers: [] },
           plugins: {
             ...DEFAULT_SETTINGS.plugins,

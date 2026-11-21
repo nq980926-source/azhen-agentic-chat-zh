@@ -12,6 +12,7 @@ const ENDPOINT = "https://106.55.92.40/mcp";
 function settings() {
   return {
     ...DEFAULT_SETTINGS,
+    knowledgeMode: "cloud",
     mcp: { ...DEFAULT_SETTINGS.mcp, enabled: true, servers: [] },
     plugins: {
       ...DEFAULT_SETTINGS.plugins,

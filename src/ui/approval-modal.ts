@@ -89,7 +89,7 @@ export class ApprovalModal extends Modal {
       this.request.toolName === "create_skill" ||
       this.request.toolName === "load_skill" ||
       this.request.toolName === "unload_skill";
-    if (isPersistentSkillTool) {
+    if (isPersistentSkillTool || this.request.allowRemember === false) {
       contentEl.createEl("p", {
         cls: "agentic-chat-approval-note",
         text: t("approval.cannotRemember"),

@@ -6,6 +6,10 @@ const root = process.cwd();
 const failures = [];
 
 const desktopOnlyAllowlist = new Map([
+  ["src/vault/physical-boundary.ts", {
+    modules: new Set(["fs"]), globals: new Set(["require"]),
+    requiredText: [/if \(!Platform\.isDesktopApp\) return;/, /never load Node modules on mobile/is],
+  }],
   [
     "src/mcp/fetcher.ts",
     {

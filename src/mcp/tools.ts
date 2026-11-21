@@ -26,6 +26,7 @@ export interface McpToolDetails {
 }
 
 export interface McpToolCreationOptions {
+  canExecute?: (localName: string) => boolean;
   onServerChanged?: (server: McpServerSettings) => void | Promise<void>;
   artifactStore?: ToolArtifactStoreLike;
   artifactThresholdChars?: number;
@@ -245,6 +246,7 @@ function createMcpTool(
       `Remote MCP tool "${remoteTool.name}" on ${server.name}. Sends the tool arguments to ${server.url}.`,
     parameters,
     execute: async (_id, params, signal) => {
+      if (options.canExecute && !options.canExecute(localName)) throw new Error("Local knowledge mode blocks this cloud knowledge tool.");
       const client = new McpHttpClient({ server, fetcher, onServerChanged: options.onServerChanged });
       const result = await client.callTool(remoteTool.name, params as Record<string, unknown>, signal);
       const rendered = await renderMcpResult(result, {

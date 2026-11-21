@@ -184,6 +184,7 @@ describe("runtime date context", () => {
     });
     const settings = {
       ...DEFAULT_SETTINGS,
+      knowledgeMode: "cloud",
       systemPrompt: "My custom system prompt.",
       mcp: { ...DEFAULT_SETTINGS.mcp, enabled: true },
       plugins: {

@@ -1,6 +1,7 @@
-import { type App, TAbstractFile, TFile, TFolder, MarkdownView, parseYaml } from "obsidian";
+import { assertPhysicalVaultPath } from "../vault/physical-boundary";
+import { type App, TAbstractFile, TFile, TFolder, MarkdownView, parseYaml, stringifyYaml } from "obsidian";
 import type { AgentTool, AgentToolResult } from "@earendil-works/pi-agent-core";
-import { applyExactEditsPartial, type EditApplyResult } from "../vault/edit";
+import { applyExactEdits, resolveExactEdits, type EditApplyResult } from "../vault/edit";
 import { diffLines, diffStat, diffTooLarge } from "../vault/diff";
 import { getParentPath, normalizeFolderPath, normalizeVaultPath } from "../vault/path";
 import type { IgnoreMatcher } from "../vault/ignore";
@@ -56,6 +57,8 @@ export const TEXT_EXTENSIONS = new Set([
  */
 export interface CreateVaultToolsOptions {
   surface?: BuiltinToolSurface;
+  canExecute?: () => boolean;
+  enforcePhysicalBoundary?: boolean;
 }
 
 export function createVaultTools(
@@ -65,7 +68,22 @@ export function createVaultTools(
   options: CreateVaultToolsOptions = {},
 ): AgentTool[] {
   const context: VaultToolFactoryContext = { app, isIgnored, memo };
-  return builtinToolContractsForSurface(options.surface).map((contract) => VAULT_TOOL_FACTORIES[contract.name](context));
+  return builtinToolContractsForSurface(options.surface).map((contract) => {
+    const tool = VAULT_TOOL_FACTORIES[contract.name](context);
+    const execute = tool.execute.bind(tool);
+    return { ...tool, execute: async (id, params, signal, onUpdate) => {
+      if (options.canExecute && !options.canExecute()) throw new Error("Knowledge scope changed. Start a new turn before accessing files.");
+      const args = params as { path?: string; newPath?: string };
+      for (const target of [args.path, args.newPath]) {
+        if (options.enforcePhysicalBoundary && typeof target === "string") await assertPhysicalVaultPath(app, normalizeVaultPath(target));
+      }
+      if (options.enforcePhysicalBoundary && ["vault_inspect", "ls", "find", "search", "grep", "get_backlinks", "get_links", "local_graph", "get_active_note"].includes(tool.name)) {
+        // Aggregate tools must not leak names/content via an indexed outside link.
+        for (const file of app.vault.getFiles()) if (!isIgnored(file.path)) await assertPhysicalVaultPath(app, file.path);
+      }
+      return execute(id, params, signal, onUpdate);
+    } };
+  });
 }
 
 interface VaultToolFactoryContext {
@@ -83,14 +101,14 @@ const VAULT_TOOL_FACTORIES: Record<BuiltinToolName, (context: VaultToolFactoryCo
   search: ({ app, isIgnored }) => createSearchTool(app, isIgnored),
   find: ({ app, isIgnored }) => createFindTool(app, isIgnored),
   grep: ({ app, isIgnored }) => createGrepTool(app, isIgnored),
-  get_active_note: ({ app, isIgnored }) => createActiveNoteTool(app, isIgnored),
+  get_active_note: ({ app, isIgnored, memo }) => createActiveNoteTool(app, isIgnored, memo),
   rename: ({ app, isIgnored, memo }) => createRenameTool(app, isIgnored, memo),
   delete: ({ app, isIgnored, memo }) => createDeleteTool(app, isIgnored, memo),
   get_backlinks: ({ app, isIgnored }) => createBacklinksTool(app, isIgnored),
   get_links: ({ app, isIgnored }) => createLinksTool(app, isIgnored),
   local_graph: ({ app, isIgnored }) => createLocalGraphTool(app, isIgnored),
   get_properties: ({ app, isIgnored }) => createGetPropertiesTool(app, isIgnored),
-  set_properties: ({ app, isIgnored }) => createSetPropertiesTool(app, isIgnored),
+  set_properties: ({ app, isIgnored, memo }) => createSetPropertiesTool(app, isIgnored, memo),
 };
 
 type VaultInspectAction = "list" | "search" | "active_note" | "local_graph" | "properties";
@@ -203,6 +221,7 @@ function finishRead(
   // not poison the memo, or the next identical read would return a stale
   // "already read" pointer instead of retrying.
   memo?.mark(readKey);
+  if (slice.startLine === 1 && slice.endLine >= slice.totalLines) memo?.markFullRead(path);
   memo?.cache(readKey, mtime, formatTextSlice(path, slice));
   memo?.recordCoverage(
     { path, startLine: slice.startLine, endLine: slice.endLine, content: slice.text },
@@ -239,6 +258,8 @@ function createReadTool(app: App, isIgnored: IgnoreMatcher, memo?: ReadMemo): Ag
       const window = resolveLineWindow(range);
       const readKey = { path, offset: window.offset, limit: window.limit };
       if (file) {
+        const fresh = await readFresh(app, file);
+        memo?.observe(path, fresh);
         const mtime = file.stat?.mtime ?? 0;
         // De-dup: a repeat read of the same range in the same turn is handed a
         // short pointer so the prompt can't quietly double a file.
@@ -272,7 +293,7 @@ function createReadTool(app: App, isIgnored: IgnoreMatcher, memo?: ReadMemo): Ag
         if (guidance) {
           return textResult(guidance, { path, tooLarge: true });
         }
-        const content = await app.vault.cachedRead(file);
+        const content = fresh;
         return finishRead(path, content, window, readKey, mtime, memo);
       }
       // Stale tree: the file is on disk (e.g. under a dot-folder the vault
@@ -300,6 +321,7 @@ function createReadTool(app: App, isIgnored: IgnoreMatcher, memo?: ReadMemo): Ag
       }
       // No mtime is available off-tree; skip the mtime-keyed cache/coverage so
       // a later indexed read cannot be poisoned by this fallback slice.
+      memo?.observe(path, content);
       const slice = sliceTextByLines(content, window);
       memo?.mark(readKey);
       return untrustedTextResult(formatTextSlice(path, slice), {
@@ -324,8 +346,13 @@ function createWriteTool(app: App, isIgnored: IgnoreMatcher, memo?: ReadMemo): A
         throw new TypeError(`Cannot write file because a folder exists at ${path}.`);
       }
       if (existing instanceof TFile) {
-        await app.vault.process(existing, () => params.content);
+        if (!params.overwrite) throw new Error(`File already exists; use edit, or explicitly authorize a whole-note overwrite: ${path}`);
+        await app.vault.process(existing, (current) => {
+          memo?.assertUnchanged(path, current, true);
+          return params.content;
+        });
       } else {
+        if (await app.vault.adapter?.exists(path)) throw new Error(`File already exists on disk: ${path}`);
         await app.vault.create(path, params.content);
       }
       memo?.invalidate(path);
@@ -342,14 +369,15 @@ function createEditTool(app: App, isIgnored: IgnoreMatcher, memo?: ReadMemo): Ag
     ...vaultToolDefinition("edit"),
     execute: async (_id, params) => {
       const { path, file } = getVisibleVaultFile(app, isIgnored, params.path);
-      // Partial-apply: edits that match are applied, failures are reported per-edit
-      // so one bad oldText no longer sinks the whole batch. The result is captured
-      // from the atomic process() transform, which gives us the live file content.
+      // Validate the read version and every replacement inside the atomic native
+      // transform. Any failed/overlapping edit throws before any text is written.
       let before = "";
       let result: EditApplyResult | undefined;
       await app.vault.process(file, (content) => {
         before = content;
-        result = applyExactEditsPartial(content, params.edits);
+        memo?.assertUnchanged(path, content);
+        const applied = resolveExactEdits(content, params.edits);
+        result = { content: applyExactEdits(content, params.edits), applied, failed: [] };
         return result.content;
       });
       if (!result) throw new Error("Edit could not be applied.");
@@ -575,7 +603,7 @@ function createGrepTool(app: App, isIgnored: IgnoreMatcher): AgentTool<typeof Gr
       const rootPath = params.path ? normalizeFolderPath(params.path) : "";
       const matches: GrepMatch[] = [];
       for (const file of getSearchableFiles(app, rootPath, isIgnored)) {
-        const content = await app.vault.cachedRead(file);
+        const content = await readFresh(app, file);
         matches.push(
           ...grepContent(file.path, content, params.pattern, {
             caseSensitive: params.caseSensitive,
@@ -627,7 +655,7 @@ async function searchVaultContent(
 ): Promise<{ matches: GrepMatch[]; truncated: boolean }> {
   const matches: GrepMatch[] = [];
   for (const file of getSearchableFiles(app, rootPath, isIgnored)) {
-    const content = await app.vault.cachedRead(file);
+    const content = await readFresh(app, file);
     matches.push(
       ...grepContent(file.path, content, query, {
         caseSensitive: options.caseSensitive,
@@ -676,7 +704,7 @@ function formatSearchResults(options: {
   return sections.join("\n\n");
 }
 
-function createActiveNoteTool(app: App, isIgnored: IgnoreMatcher): AgentTool<typeof ActiveNoteParameters> {
+function createActiveNoteTool(app: App, isIgnored: IgnoreMatcher, memo?: ReadMemo): AgentTool<typeof ActiveNoteParameters> {
   return {
     ...vaultToolDefinition("get_active_note"),
     execute: async (_id, params) => {
@@ -692,7 +720,8 @@ function createActiveNoteTool(app: App, isIgnored: IgnoreMatcher): AgentTool<typ
           : "";
       if (params.includeSelection) lines.push("", "Selection:", selection || "(no selection)");
       if (params.includeContent) {
-        const content = await app.vault.cachedRead(file);
+        const content = await readFresh(app, file);
+        memo?.observe(file.path, content);
         lines.push("", "Content:", formatTextSlice(file.path, sliceTextByLines(content, { limit: 200 })));
       }
       // When content is included, file body is untrusted vault data
@@ -714,6 +743,7 @@ function createRenameTool(app: App, isIgnored: IgnoreMatcher, memo?: ReadMemo): 
       if (app.vault.getAbstractFileByPath(newPath)) {
         throw new Error(`Something already exists at ${newPath}.`);
       }
+      memo?.assertUnchanged(path, await readFresh(app, file));
       await ensureParentFolders(app, newPath);
       await app.fileManager.renameFile(file, newPath);
       memo?.invalidate(path);
@@ -731,6 +761,7 @@ function createDeleteTool(app: App, isIgnored: IgnoreMatcher, memo?: ReadMemo): 
       const path = normalizeVisibleVaultPath(isIgnored, params.path);
       const recursive = params.recursive === true;
       const entry = app.vault.getAbstractFileByPath(path);
+      if (entry instanceof TFile) memo?.assertUnchanged(path, await readFresh(app, entry));
       const indexed = entry ? await deleteIndexedEntry(app, entry, path, recursive, memo) : null;
       return indexed ?? deleteStaleEntry(app, path, recursive, memo);
     },
@@ -867,7 +898,7 @@ async function trashTreeFolderRecursive(app: App, folder: TFolder): Promise<void
   await app.fileManager.trashFile(folder);
 }
 
-/** Prefer trash for adapter-level deletes; fall back to permanent removal. */
+/** Prefer system/local trash; never fall back to permanent removal. */
 async function trashAdapterFile(app: App, path: string): Promise<"trash" | "removed"> {
   try {
     if (await app.vault.adapter.trashSystem(path)) return "trash";
@@ -880,11 +911,10 @@ async function trashAdapterFile(app: App, path: string): Promise<"trash" | "remo
   } catch {
     // Fall through to permanent removal.
   }
-  await app.vault.adapter.remove(path);
-  return "removed";
+  throw new Error(`Trash failed; refusing permanent deletion: ${path}`);
 }
 
-/** Prefer trash for adapter-level folder deletes; fall back to rmdir. */
+/** Folder trash failure must stop instead of permanently deleting content. */
 async function trashAdapterFolder(app: App, path: string, recursive: boolean): Promise<"trash" | "removed"> {
   try {
     if (await app.vault.adapter.trashSystem(path)) return "trash";
@@ -897,8 +927,7 @@ async function trashAdapterFolder(app: App, path: string, recursive: boolean): P
   } catch {
     // Fall through to permanent removal.
   }
-  await app.vault.adapter.rmdir(path, recursive);
-  return "removed";
+  throw new Error(`Trash failed; refusing permanent deletion: ${path} (recursive=${recursive})`);
 }
 
 function createBacklinksTool(app: App, isIgnored: IgnoreMatcher): AgentTool<typeof BacklinksParameters> {
@@ -965,14 +994,16 @@ function createGetPropertiesTool(app: App, isIgnored: IgnoreMatcher): AgentTool<
   };
 }
 
-function createSetPropertiesTool(app: App, isIgnored: IgnoreMatcher): AgentTool<typeof SetPropertiesParameters> {
+function createSetPropertiesTool(app: App, isIgnored: IgnoreMatcher, memo?: ReadMemo): AgentTool<typeof SetPropertiesParameters> {
   return {
     ...vaultToolDefinition("set_properties"),
     execute: async (_id, params) => {
       const { path, file } = getVisibleVaultFile(app, isIgnored, params.path);
       const set: string[] = [];
       const deleted: string[] = [];
-      await app.fileManager.processFrontMatter(file, (frontmatter: Record<string, unknown>) => {
+      await app.vault.process(file, (content) => {
+        memo?.assertUnchanged(path, content);
+        const frontmatter = parseFrontmatterBlock(content);
         for (const [key, value] of Object.entries(params.properties)) {
           if (value === null) {
             delete frontmatter[key];
@@ -982,7 +1013,10 @@ function createSetPropertiesTool(app: App, isIgnored: IgnoreMatcher): AgentTool<
             set.push(key);
           }
         }
+        const body = content.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, "");
+        return `---\n${stringifyYaml(frontmatter)}---\n${body}`;
       });
+      memo?.invalidate(path);
       const parts: string[] = [];
       if (set.length > 0) parts.push(`set ${set.join(", ")}`);
       if (deleted.length > 0) parts.push(`deleted ${deleted.join(", ")}`);
@@ -1161,4 +1195,8 @@ function untrustedTextResult(
     content: [{ type: "text", text: wrapToolOutputTruncated(truncateToolOutput(text), toolName) }],
     details,
   };
+}
+
+async function readFresh(app: App, file: TFile): Promise<string> {
+  return typeof app.vault.read === "function" ? app.vault.read(file) : app.vault.cachedRead(file);
 }

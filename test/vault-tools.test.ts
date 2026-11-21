@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { TFile, TFolder, type App } from "obsidian";
+import { TFile, TFolder, parseYaml, stringifyYaml, type App } from "obsidian";
 import { MUTATING_TOOLS } from "../src/tools/tool-contracts";
 import { createVaultTools } from "../src/tools/vault-tools";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
@@ -73,7 +73,7 @@ function makeApp(spec: VaultSpec): App {
     tfile.parent = parent;
     parent.children.push(tfile);
     files.set(path, tfile);
-    contents.set(path, file.content ?? "");
+    contents.set(path, file.content ?? (file.frontmatter ? `---\n${stringifyYaml(file.frontmatter)}---\n` : ""));
     if (file.frontmatter) frontmatterCache.set(path, file.frontmatter);
   }
 
@@ -103,6 +103,8 @@ function makeApp(spec: VaultSpec): App {
       process: async (file: TFile, fn: (content: string) => string) => {
         const next = fn(contents.get(file.path) ?? "");
         contents.set(file.path, next);
+        const yaml = /^---\n([\s\S]*?)\n---/.exec(next);
+        if (yaml) frontmatterCache.set(file.path, parseYaml(yaml[1]));
         return next;
       },
     },
@@ -746,44 +748,17 @@ describe("edit — audit details", () => {
     expect(details.failed).toEqual([]);
   });
 
-  it("captures per-edit failures (and the edit that did apply) in a mixed batch", async () => {
-    const app = makeApp({ files: { "Note.md": { content: "alpha beta gamma\n" } } });
-
-    const { text, details } = await run(editTool(app), {
-      path: "Note.md",
-      edits: [
-        { oldText: "alpha", newText: "ALPHA" },
-        { oldText: "delta", newText: "DELTA" },
-      ],
-    });
-
-    expect(text).toMatch(/Applied 1 of 2/);
-    const applied = details.applied as Array<Record<string, unknown>>;
-    const failed = details.failed as Array<Record<string, unknown>>;
-    expect(applied).toHaveLength(1);
-    expect(applied[0]).toMatchObject({ oldText: "alpha", newText: "ALPHA" });
-    expect(failed).toHaveLength(1);
-    expect(failed[0]).toMatchObject({ oldText: "delta", newText: "DELTA" });
-    expect(typeof failed[0]?.error).toBe("string");
-    expect(failed[0]?.error).toMatch(/oldText was not found/);
-    expect(details.editCount).toBe(1);
-    expect(details.failedCount).toBe(1);
+  it("rejects a mixed batch without changing the file", async () => {
+    const app = makeApp({ files: { "Note.md": { content: "alpha beta gamma" } } });
+    await expect(run(getTool(app, "edit"), { path: "Note.md", edits: [
+      { oldText: "alpha", newText: "ALPHA" }, { oldText: "delta", newText: "DELTA" },
+    ] })).rejects.toThrow(/not found/);
+    expect(await app.vault.cachedRead(app.vault.getFileByPath("Note.md")!)).toBe("alpha beta gamma");
   });
-
-  it("captures every failure with no applied edits", async () => {
-    const app = makeApp({ files: { "Note.md": { content: "alpha beta gamma\n" } } });
-
-    const { text, details } = await run(editTool(app), {
-      path: "Note.md",
-      edits: [{ oldText: "delta", newText: "DELTA" }],
-    });
-
-    expect(text).toMatch(/Applied 0 of 1/);
-    const failed = details.failed as Array<Record<string, unknown>>;
-    expect(failed).toHaveLength(1);
-    expect(failed[0]).toMatchObject({ oldText: "delta", newText: "DELTA" });
-    expect(details.applied).toEqual([]);
-    expect(details.editCount).toBe(0);
-    expect(details.failedCount).toBe(1);
+  it("reports a fully failed edit as an error", async () => {
+    const app = makeApp({ files: { "Note.md": { content: "alpha" } } });
+    await expect(run(getTool(app, "edit"), { path: "Note.md", edits: [
+      { oldText: "delta", newText: "DELTA" },
+    ] })).rejects.toThrow(/not found/);
   });
 });

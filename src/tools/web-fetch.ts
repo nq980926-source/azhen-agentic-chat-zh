@@ -83,6 +83,7 @@ const FetchParameters = Type.Object({
 });
 
 export interface WebFetchConfig {
+  canFetch?: (url: string) => boolean;
   deepSeekApiKey?: string;
   fetcher: WebFetcher;
   /** Default cap on returned characters. */
@@ -117,10 +118,12 @@ async function fetchFollowingRedirects(
   url: string,
   signal: AbortSignal | undefined,
   allowedHosts: string = "",
+  canFetch?: (url: string) => boolean,
 ): Promise<WebHttpResponse> {
   let currentUrl = url;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
     throwIfAborted(signal);
+    if (canFetch && !canFetch(currentUrl)) throw new Error("Local knowledge mode blocks this knowledge URL.");
     const response = await fetcher({ url: currentUrl, method: "GET", headers: { Accept: ACCEPT_HEADER } }, signal);
     if (!REDIRECT_STATUSES.has(response.status)) return response;
     const location = response.headers["location"];
@@ -156,6 +159,7 @@ export function createWebFetchTool(config: WebFetchConfig): AgentTool<typeof Fet
     parameters: FetchParameters,
     execute: async (_id, params, signal) => {
       const url = normalizeWebUrl(params.url);
+      if (config.canFetch && !config.canFetch(url)) throw new Error("Local knowledge mode blocks this knowledge URL.");
       if (!isHostAllowedByAllowlist(new URL(url).hostname, config.allowedHosts ?? "")) {
         throw new Error(`Blocked by allowlist: ${new URL(url).hostname}`);
       }
@@ -164,7 +168,7 @@ export function createWebFetchTool(config: WebFetchConfig): AgentTool<typeof Fet
       if (deepSeek && [...url].length > 8192) throw new Error("DeepSeek URL exceeds 8192 characters.");
       const response = deepSeek
         ? await requestDeepSeek(config.fetcher, "fetch", { url }, config.deepSeekApiKey!, signal)
-        : await fetchFollowingRedirects(config.fetcher, url, signal, config.allowedHosts ?? "");
+        : await fetchFollowingRedirects(config.fetcher, url, signal, config.allowedHosts ?? "", config.canFetch);
       throwIfAborted(signal);
       const page = deepSeek ? parseDeepSeekResponse(response) as { title?: unknown; content?: unknown } | null : null;
       if (deepSeek && (!page || typeof page.title !== "string" || typeof page.content !== "string")) {

@@ -335,3 +335,10 @@ For static-header servers, also set `AGENTIC_CHAT_E2E_MCP_HEADER_NAME` and
 
 [MIT](LICENSE). See also the [third-party notices](THIRD_PARTY_NOTICES.md) for
 bundled dependencies and adapted code.
+
+
+## 本地知识库测试版
+
+知识库工作模式独立于 Safe/YOLO/Plan：新安装默认本地 Vault，已有 Knowledge 配置保留腾讯云模式并显示迁移提示。切换不迁移文件，不执行任何同步。本地模式禁用 Knowledge MCP 文件能力和云端财务核验；Memory 云端注入和联网搜索继续独立工作。
+
+Desktop file safety uses the guard `if (!Platform.isDesktopApp) return;` before optional realpath checks: never load Node modules on mobile. Windows external symlinks/junctions are refused. Standard Android Vault access uses Obsidian's scoped adapter. No portable-filesystem or other custom adapter compatibility claim is made.

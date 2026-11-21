@@ -1,3 +1,4 @@
+import { KnowledgeModeTransition, type KnowledgeMode } from "./agent/knowledge-mode";
 import {PROGRESS_LANGUAGE, renderProgressBlock} from "./ui/progress-block";
 import {
   Plugin,
@@ -171,6 +172,7 @@ export default class AgenticChatPlugin extends Plugin {
       streamFn: createWindowE2EStreamFn({ enabled: __AGENTIC_CHAT_ENABLE_E2E_STREAM__ }),
       loopGuardDisabled: __AGENTIC_CHAT_ENABLE_E2E_STREAM__,
       saveSettings: () => this.saveSettings(),
+      knowledgeTransitionActive: () => this.knowledgeTransition.active,
       skillScaffolder: this.pluginService,
       artifactStore: ToolArtifactStore.forPlugin(this.app, this, {
         referencedArtifactIds: () => sessionManager.listReferencedArtifactIds(),
@@ -320,6 +322,21 @@ export default class AgenticChatPlugin extends Plugin {
     return leaf;
   }
 
+  readonly knowledgeTransition = new KnowledgeModeTransition();
+
+  async requestKnowledgeModeChange(next: KnowledgeMode): Promise<boolean> {
+    const participants = this.app.workspace.getLeavesOfType(VIEW_TYPE_AGENT_CHAT)
+      .flatMap(leaf => leaf.view instanceof ChatView ? leaf.view.knowledgeParticipants() : []);
+    try {
+      const changed = await this.knowledgeTransition.change(this.settings, next, participants, () => this.saveSettings());
+      if (changed) new Notice(`知识库已切换为${next === "local" ? "本地 Vault" : "腾讯云"}。文件未移动或同步；旧聊天内容仅作为历史。`);
+      return changed;
+    } catch (error) {
+      new Notice(error instanceof Error ? error.message : "知识库切换失败，未更改文件。");
+      return false;
+    }
+  }
+
   async loadSettings(): Promise<void> {
     const stored = (await this.loadData()) as Partial<AgenticChatSettings> | null;
     // Capture legacy skills/templates folder settings BEFORE the first save
@@ -327,6 +344,9 @@ export default class AgenticChatPlugin extends Plugin {
     // so the one-time migration below can preserve the user's skills.
     const legacySkillFolders = legacySkillFolderPaths(stored);
     this.settings = mergeSettings(stored);
+    if (stored && !stored.knowledgeMode && Object.keys(stored).length > 0) {
+      new Notice(`知识库模式迁移：保留原有${this.settings.knowledgeMode === "cloud" ? "腾讯云" : "本地 Vault"}写入位置。可在 Agent 设置中切换；不会迁移文件。`, 10000);
+    }
     hydrateSettingsSecrets(this.settings, this.secretStore);
     // S4: remember mode for broadcast guard; heals plan restore on restart
     this.lastSyncedMode = this.settings.mode;

@@ -72,6 +72,7 @@ export type { ToolApprovalRequest } from "./tool-call-controller";
 export type { SummarizeFn } from "./compaction-runtime";
 
 export interface AgentServiceOptions {
+  knowledgeTransitionActive?: () => boolean;
   app: App;
   getSettings: () => AgenticChatSettings;
   sessionManager: ObsidianSessionManager;
@@ -274,11 +275,15 @@ export class AgentService {
       afterDelete: () => this.cleanupArtifactsAfterSessionDelete(),
     });
     this.promptTurns = new AgentPromptTurnRuntime({
+      startBlockReason: () => options.knowledgeTransitionActive?.() ? "知识库正在切换，请稍后发送。" : undefined,
       requireAgent: () => this.requireAgent(),
       getSettings: this.getSettings,
       hasApiKey: () => this.hasApiKey(),
       getSessionCostUsd: () => this.getSessionUsage().cost?.total ?? 0,
-      refreshConfiguration: () => this.parentConfiguration.refresh(this.parentAgent),
+      refreshConfiguration: async () => {
+        if (options.knowledgeTransitionActive?.()) throw new Error("知识库正在切换，请稍后发送。");
+        await this.parentConfiguration.refresh(this.parentAgent);
+      },
       maybeCompact: () => this.maybeCompact(),
       afterCompaction: () => this.compactionRecoveryError,
       sessionToken: () => this.sessionActions.getSessionToken(),
@@ -324,6 +329,19 @@ export class AgentService {
    */
   getMessages(): AgentMessage[] {
     return conversationMessages(this.agent?.state.messages ?? []);
+  }
+
+  resetKnowledgeContext(): void {
+    if (this.isTurnInFlight()) throw new Error("Cannot reset an active knowledge turn.");
+    this.sessionState.readMemo.clear();
+    this.runtimeResources.resetKnowledgeContext();
+    this.toolCalls.clearSessionState();
+    // Empty tools immediately. The next accepted turn reloads the current scope.
+    if (this.agent) {
+      this.parentAgent.refreshConfiguration();
+      this.agent.state.tools = [];
+    }
+    this.notifyChange();
   }
 
   isStreaming(): boolean {

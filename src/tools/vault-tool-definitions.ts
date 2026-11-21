@@ -34,6 +34,7 @@ export const VaultInspectParameters = Type.Object({
 export const WriteParameters = Type.Object({
   path: Type.String({ description: "vault-relative path" }),
   content: Type.String({ description: "full file content" }),
+  overwrite: Type.Optional(Type.Boolean({ description: "Replace only after full read and approval." })),
 });
 
 export const EditParameters = Type.Object({
@@ -143,13 +144,13 @@ export type VaultToolDefinition<Name extends BuiltinToolName = BuiltinToolName> 
     : never;
 
 const VAULT_TOOL_DESCRIPTIONS: Record<BuiltinToolName, string> = {
-  read: "Read a vault file. For large files, use startLine/endLine or offset/limit ranges.",
+  read: "Read vault text; startLine/endLine or offset/limit.",
   vault_inspect:
-    "Read-only vault inspection: list folders, search names/content, inspect the active note, map links, read frontmatter. " +
-    "Ignored paths stay hidden; working-directory approval still applies.",
+    "Inspect vault: list, search names/content, active note, links, frontmatter. " +
+    "Honors ignores and approvals.",
   write:
-    "Create or overwrite a vault file; parent folders are auto-created. " +
-    "For frontmatter-only changes, prefer set_properties.",
+    "Create a vault file; refuses existing files unless overwrite:true. " +
+    "Use edit for text; set_properties for frontmatter.",
   edit:
     "Apply exact text replacements to a vault file. Each oldText must match exactly once.",
   ls: "List files and folders in a vault folder.",

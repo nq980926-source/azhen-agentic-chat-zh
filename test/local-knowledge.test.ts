@@ -11,6 +11,7 @@ import { createMcpServerSettings } from "../src/mcp/settings";
 async function fixture() {
   const vault = new FakeVault();
   const file = await vault.create("日记/今天.md", "first\nlast");
+  Object.assign(vault, { getFileByPath: (path: string) => vault.getAbstractFileByPath(path) });
   const app = { vault } as unknown as App;
   const tools = createVaultTools(app, () => false, new ReadMemo());
   const call = (name: string, args: unknown) => tools.find(t => t.name === name)!.execute("call", args);
@@ -20,7 +21,7 @@ async function fixture() {
 describe("local knowledge safety witness", () => {
   it("new installs default local while existing Knowledge config keeps cloud", () => {
     expect(mergeSettings(null)).toHaveProperty("knowledgeMode", "local");
-    const server = createMcpServerSettings("knowledge", "Knowledge", AZHEN_KNOWLEDGE_MCP_ENDPOINT);
+    const server = { ...createMcpServerSettings({ id: "knowledge" }), url: AZHEN_KNOWLEDGE_MCP_ENDPOINT };
     expect(mergeSettings({ mcp: { enabled: true, servers: [server], proxyUrl: "", noProxy: "" } }))
       .toHaveProperty("knowledgeMode", "cloud");
   });
@@ -54,6 +55,5 @@ describe("local knowledge safety witness", () => {
     await f.call("edit", { path: f.file.path, edits: [{ oldText: "syncthing", newText: "confirmed" }] });
     expect(await f.vault.cachedRead(f.file)).toBe("first\nconfirmed");
   });
-  it.each(["C:\\outside.md", "C:outside.md", "file:///outside.md", "../outside.md", "\\\\host\\outside.md", "note.md\u0000"])
-    ("rejects non-Vault path %s", path => expect(() => normalizeVaultPath(path)).toThrow());
+  it.each(["C:\\outside.md", "C:outside.md", "file:///outside.md", "../outside.md", "\\\\host\\outside.md", "note.md\u0000"])( "rejects non-Vault path %s", path => expect(() => normalizeVaultPath(path)).toThrow());
 });

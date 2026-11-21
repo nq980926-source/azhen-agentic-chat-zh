@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { Agent } from "@earendil-works/pi-agent-core";
 import { AgentPromptTurnRuntime } from "../src/agent/prompt-turn-runtime";
 import { DEFAULT_SETTINGS, type AgenticChatSettings } from "../src/settings";
@@ -16,6 +16,7 @@ function harness(overrides: {
   sessionCostUsd?: number;
   refreshConfiguration?: () => Promise<void>;
   onTurnStart?: () => void;
+  startBlockReason?: () => string | undefined;
 } = {}): Harness {
   const settings: AgenticChatSettings = {
     ...DEFAULT_SETTINGS,
@@ -28,6 +29,7 @@ function harness(overrides: {
   const events: string[] = [];
   const agent = { state: { isStreaming: overrides.isStreaming ?? false } } as Agent;
   const runtime = new AgentPromptTurnRuntime({
+    startBlockReason: overrides.startBlockReason,
     requireAgent: () => agent,
     getSettings: () => settings,
     hasApiKey: () => overrides.hasApiKey ?? true,
@@ -63,6 +65,13 @@ function harness(overrides: {
 }
 
 describe("AgentPromptTurnRuntime", () => {
+  it("rejects sends before accepting a turn while knowledge mode is switching", async () => {
+    const started = vi.fn();
+    const { runtime, events } = harness({ startBlockReason: () => "knowledge switching", onTurnStart: started });
+    const run = vi.fn(); await runtime.run(run);
+    expect(started).not.toHaveBeenCalled(); expect(run).not.toHaveBeenCalled();
+    expect(runtime.isInFlight()).toBe(false); expect(events).toContain("set-error-message:knowledge switching");
+  });
   it("refreshes, compacts, runs, consumes overrides, and notifies around a successful turn", async () => {
     const { runtime, agent, events } = harness();
 

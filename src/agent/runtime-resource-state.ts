@@ -118,6 +118,12 @@ export class AgentRuntimeResourceState {
     };
   }
 
+  resetKnowledgeContext(): void {
+    this.resources = EMPTY_AGENT_RUNTIME_RESOURCES;
+    this.skillLoads.prune(new Set());
+    resetToolBudgetState(this.toolBudgetState);
+  }
+
   async reload(): Promise<AgentRuntimeResources> {
     this.resources = await loadAgentRuntimeResources(
       this.options.app,
@@ -155,6 +161,7 @@ export class AgentRuntimeResourceState {
     const result = buildAgentParentTools({
       app: this.options.app,
       settings,
+      getSettings: this.options.getSettings,
       resources: this.resources,
       readMemo: this.options.readMemo,
       webFetch: this.options.webFetch,

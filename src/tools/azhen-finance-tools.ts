@@ -65,7 +65,7 @@ interface ReadReceipt {
  * a second MCP client, and never accepts model-supplied totals.
  */
 export function createAzhenFinanceTools(options: AzhenFinanceToolOptions): AgentTool[] {
-  if (!hasEnabledAzhenKnowledgeMcp(options.getSettings())) return [];
+  if (options.getSettings().knowledgeMode === "local" || !hasEnabledAzhenKnowledgeMcp(options.getSettings())) return [];
   const runtime = new AzhenFinanceRuntime(options);
   const query: AgentTool<typeof QuerySchema> = {
     name: AZHEN_FINANCE_QUERY_TOOL,
@@ -161,7 +161,7 @@ export class AzhenFinanceRuntime {
   }
 
   private readTool(): AgentTool {
-    if (!hasEnabledAzhenKnowledgeMcp(this.options.getSettings())) {
+    if (this.options.getSettings().knowledgeMode === "local" || !hasEnabledAzhenKnowledgeMcp(this.options.getSettings())) {
       throw new Error("Knowledge MCP 未配置或未启用。");
     }
     const settings = this.options.getSettings();

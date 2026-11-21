@@ -1,3 +1,5 @@
+import { adaptKnowledgeStorage } from "../skills/knowledge-storage";
+import { isKnowledgeServer, knowledgeModeOverlay, knowledgeToolBlocked, knowledgeFetchBlocked } from "./knowledge-mode";
 import { type App } from "obsidian";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { Skill } from "../skills/skill-prompt";
@@ -127,11 +129,12 @@ export async function loadAgentRuntimeResources(
   };
   const mcp = webFetch
     ? await createMcpToolsWithDiagnostics(
-        { ...settings.mcp, servers: mcpServers },
+        { ...settings.mcp, servers: mcpServers.filter(server => settings.knowledgeMode !== "local" || !isKnowledgeServer(settings, server)) },
         createMcpFetcher(mcpProxySettings, webFetch),
         {
           onServerChanged: persistMcpServerChange,
           artifactStore,
+          canExecute: name => !knowledgeToolBlocked(settings, name),
         },
       )
     : { tools: [], diagnostics: [] };
@@ -159,7 +162,7 @@ export function composeAgentSystemPrompt(
     selfAwarenessOverlay,
     runtimeDateContext,
     presentationContext,
-    hasEnabledAzhenKnowledgeMcp(settings) ? AZHEN_KNOWLEDGE_PROMPT_OVERLAY : "",
+    settings.knowledgeMode === "cloud" && hasEnabledAzhenKnowledgeMcp(settings) ? AZHEN_KNOWLEDGE_PROMPT_OVERLAY : "",
     longTermMemoryOverlay ?? "",
     resources.instructionsOverlay,
     MODES[settings.mode].promptOverlay,
@@ -167,6 +170,7 @@ export function composeAgentSystemPrompt(
     formatAgentRolesForSystemPrompt(resources.profiles),
     pluginSkillTrustBoundary(resources.plugins, settings.plugins.folder),
     formatLoadedSkillsOverlay(resources.skills, skillLoads),
+    knowledgeModeOverlay(settings.knowledgeMode),
   ];
   return buildSystemPrompt(settings.systemPrompt, resources.skills, overlays);
 }
@@ -251,6 +255,7 @@ function pluginSkillTrustBoundary(plugins: LoadedPlugin[], folder?: string): str
 
 export function buildAgentParentTools(options: {
   app: App;
+  getSettings?: () => AgenticChatSettings;
   settings: AgenticChatSettings;
   resources: AgentRuntimeResources;
   readMemo: ReadMemo;
@@ -271,16 +276,17 @@ export function buildAgentParentTools(options: {
   /** Finance-specific deterministic query tools. */
   azhenFinanceTools?: AgentTool[];
 }): { tools: AgentTool[]; toolBudget: ToolBudgetSnapshot } {
+  const scope = options.settings.knowledgeMode;
   const tools = [
-    ...createVaultTools(options.app, options.resources.ignoreMatcher, options.readMemo),
+    ...createVaultTools(options.app, options.resources.ignoreMatcher, options.readMemo, { enforcePhysicalBoundary: true, canExecute: () => !options.getSettings || options.getSettings().knowledgeMode === scope }),
     ...(options.askUser ? [createAskUserTool(options.askUser)] : []),
     ...(options.azhenMemoryEnabled ? [] : createMemoryTools(options.app)),
     ...createDocumentTools(options.app, options.artifactStore),
-    ...createWebTools(options.settings.web, options.webFetch, options.artifactStore),
+    ...createWebTools(options.settings.web, options.webFetch, options.artifactStore, url => !knowledgeFetchBlocked(options.settings, url)),
     ...createToolArtifactTools(options.artifactStore),
     ...(options.azhenMemoryTools ?? []),
-    ...(options.azhenFinanceTools ?? []),
-    ...options.resources.mcpTools,
+    ...(options.azhenFinanceTools ?? []).filter(tool => !knowledgeToolBlocked(options.settings, tool.name)),
+    ...options.resources.mcpTools.filter(tool => !knowledgeToolBlocked(options.settings, tool.name)),
     createReadSkillTool(options.resources.skills),
     createReadSkillFileTool(options.app, options.resources.skills),
     ...createSkillLoadTools(options.resources.skills, options.skillLoadRegistry),
@@ -314,5 +320,5 @@ async function loadRuntimeSkills(
   for (const skill of [...pluginSkills, ...builtinSkills(settings.web.enabled)]) {
     if (!byName.has(skill.name)) byName.set(skill.name, skill);
   }
-  return [...byName.values()];
+  return [...byName.values()].map(skill => adaptKnowledgeStorage(skill, settings.knowledgeMode));
 }

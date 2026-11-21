@@ -102,6 +102,7 @@ type SettingsOverrides = Omit<Partial<AgenticChatSettings>, "web"> & {
 function settings(overrides: SettingsOverrides = {}): AgenticChatSettings {
   return {
     ...DEFAULT_SETTINGS,
+    knowledgeMode: "cloud",
     ...overrides,
     web: { ...DEFAULT_SETTINGS.web, ...(overrides.web ?? {}) },
     mcp: { ...DEFAULT_SETTINGS.mcp, ...(overrides.mcp ?? {}) },

@@ -24,6 +24,8 @@ Each one keeps the same five sections, in this order:
 | [Subagents and context](./subagents-and-context.md) | `/agent`, the `subagent` tool, child status and stop, context serialization and budgets. |
 | [Finance and Charts](./finance-and-charts.md) | Exact ledger parsing, `FinanceFact`, and Charts Markdown rendered inside assistant messages. |
 
+- [Local knowledge mode](./local-knowledge.md)
+
 ## Shared preconditions
 
 - Build before you assert. `npm run verify -- e2e <spec>` rebuilds the e2e

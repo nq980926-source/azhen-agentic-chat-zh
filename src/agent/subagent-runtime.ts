@@ -1,3 +1,4 @@
+import { knowledgeFetchBlocked, knowledgeModeOverlay } from "./knowledge-mode";
 import type { App } from "obsidian";
 import { Agent, type AgentTool, type StreamFn } from "@earendil-works/pi-agent-core";
 import type { Usage } from "@earendil-works/pi-ai";
@@ -76,14 +77,15 @@ export class AgentSubagentRuntime {
 
   createChildAgent(profile: AgentRole): Agent {
     const settings = this.getSettings();
+    const scope = settings.knowledgeMode;
     const readOnly = settings.mode === "plan";
     const childNamespace = this.nextChildNamespace();
     // Strip tools the user explicitly denied before the child is created.
     // Allowed child calls still flow through the parent tool-call controller.
     const skills = this.getResources().skills;
     const childTools = [
-      ...createVaultTools(this.app, this.getResources().ignoreMatcher, new ReadMemo()),
-      ...createWebTools(settings.web, this.webFetch, this.artifactStore),
+      ...createVaultTools(this.app, this.getResources().ignoreMatcher, new ReadMemo(), { enforcePhysicalBoundary: true, canExecute: () => this.getSettings().knowledgeMode === scope }),
+      ...createWebTools(settings.web, this.webFetch, this.artifactStore, url => !knowledgeFetchBlocked(this.getSettings(), url)),
       ...createToolArtifactTools(this.artifactStore),
       createReadSkillTool(skills),
       createReadSkillFileTool(this.app, skills),
@@ -94,7 +96,7 @@ export class AgentSubagentRuntime {
     return new Agent({
       streamFn: this.buildStreamFn(),
       initialState: {
-        systemPrompt: `${profile.systemPrompt.trim()}\n\n${buildRuntimeDateContext()}`,
+        systemPrompt: `${profile.systemPrompt.trim()}\n\n${buildRuntimeDateContext()}\n\n${knowledgeModeOverlay(settings.knowledgeMode)}`,
         model: buildModel(childModelConfig(settings, profile.model)),
         thinkingLevel: settings.thinkingLevel,
         tools,

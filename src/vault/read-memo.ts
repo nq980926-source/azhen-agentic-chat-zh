@@ -60,6 +60,25 @@ const MAX_COVERAGE_QUOTE = 600;
 const MAX_COVERAGE_WINDOWS_PER_PATH = 32;
 
 export class ReadMemo {
+  private readonly snapshots = new Map<string, { content: string; fullRead: boolean }>();
+  observe(path: string, content: string): void {
+    if (this.snapshots.get(path)?.content === content) return;
+    this.invalidate(path);
+    this.snapshots.set(path, { content, fullRead: false });
+  }
+  markFullRead(path: string): void {
+    const snapshot = this.snapshots.get(path);
+    if (snapshot) snapshot.fullRead = true;
+  }
+  assertUnchanged(path: string, current: string, requireFull = false): void {
+    const snapshot = this.snapshots.get(path);
+    if (!snapshot) throw new Error(`Read the current file before changing it: ${path}`);
+    if (snapshot.content !== current) {
+      this.invalidate(path);
+      throw new Error(`File changed after reading (external edit or Syncthing conflict): ${path}. Re-read before writing; nothing was changed.`);
+    }
+    if (requireFull && !snapshot.fullRead) throw new Error(`Whole-note replacement requires a complete current read: ${path}`);
+  }
   private readonly seen = new Set<string>();
   // TODO: contentCache may be redundant — same-session dedup already handled by
   // `seen`, and Obsidian's cachedRead is fast enough that cross-session
@@ -160,6 +179,7 @@ export class ReadMemo {
 
   /** Drop every memoized read and cached content of `path`. */
   invalidate(path: string): void {
+    this.snapshots.delete(path);
     const prefix = `${path}\u0000`;
     for (const id of this.seen) {
       if (id.startsWith(prefix)) this.seen.delete(id);
@@ -171,6 +191,7 @@ export class ReadMemo {
   }
 
   clear(): void {
+    this.snapshots.clear();
     this.seen.clear();
     this.contentCache.clear();
     this.coverage.clear();

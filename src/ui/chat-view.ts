@@ -1,3 +1,4 @@
+import type { KnowledgeModeParticipant } from "../agent/knowledge-mode";
 import { ToolCallGroup } from "./tool-call-group";
 import {
   ItemView,
@@ -202,6 +203,7 @@ export class ChatView extends ItemView {
   // Autocomplete state: the active query token and a cached mention candidate list.
   private activeQuery: AcQuery | null = null;
   private mentionCache: MentionCandidate[] | null = null;
+  private knowledgePreparations = 0;
   private queuedPromptArmed = false;
   private flushingQueuedPrompt = false;
   /** Last preview rendered in the pending queue chip; gates no-op chip re-renders while typing. */
@@ -1223,6 +1225,20 @@ export class ChatView extends ItemView {
   }
 
   /** Whether the current tab's agent is streaming — exposed for the plugin's S4 broadcast. */
+  knowledgeParticipants(): KnowledgeModeParticipant[] {
+    return [...this.tabs.map(tab => tab.service), {
+      isTurnInFlight: () => this.knowledgePreparations > 0 || this.flushingQueuedPrompt || this.tabs.some(tab => {
+        const swap = tab.service.getSessionSwapState();
+        return !!tab.needsApproval || !!tab.pendingApprovalModal || (swap !== "live" && swap !== "idle") ||
+          (tab === this.activeTab ? this.queuedPromptArmed : tab.state.queuedPromptArmed);
+      }),
+      resetKnowledgeContext: () => {
+        this.activeNoteCache.clear(); this.contextCache.clear();
+        for (const tab of this.tabs) { tab.state.activeNoteCache.clear(); tab.state.contextCache.clear(); }
+      },
+    }];
+  }
+
   isStreaming(): boolean {
     return this.isAnyTabStreaming();
   }
@@ -1529,6 +1545,7 @@ export class ChatView extends ItemView {
   }
 
   private async submit(): Promise<void> {
+    if (this.plugin?.knowledgeTransition?.active) { new Notice("知识库正在切换，请稍后发送。"); return; }
     this.cancelAutocomplete();
     this.menu.hide();
     const text = this.inputEl.value.trim();
@@ -1857,6 +1874,9 @@ export class ChatView extends ItemView {
     text: string,
     literal = false,
   ): Promise<{ prompt: string; images: ImageContent[]; sessionToken: string; messageCountBefore: number } | null> {
+    if (this.plugin?.knowledgeTransition?.active) throw new Error("知识库正在切换，请稍后发送。");
+    this.knowledgePreparations += 1;
+    try {
     // A fresh tab has no session yet. Create/continue it before sampling the
     // token, otherwise the token changes during this same send and the guard
     // falsely rejects a valid first prompt.
@@ -1891,6 +1911,7 @@ export class ChatView extends ItemView {
       return null;
     }
     return { prompt, images, sessionToken, messageCountBefore };
+    } finally { this.knowledgePreparations -= 1; }
   }
 
   private async sendPrompt(text: string, expected?: {tab:ChatTab;token:string}): Promise<void> {

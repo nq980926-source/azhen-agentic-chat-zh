@@ -113,11 +113,15 @@ export function parseYaml(input: string): Record<string, unknown> {
     if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
       value = value.slice(1, -1);
     }
-    data[match[1]] = value;
+    try { data[match[1]] = JSON.parse(match[2]); } catch { data[match[1]] = value; }
   }
   return data;
 }
 
 export class MarkdownPreviewRenderer {
   static codeBlockPostProcessors: unknown;
+}
+
+export function stringifyYaml(value: Record<string, unknown>): string {
+  return Object.entries(value).map(([key, item]) => `${key}: ${JSON.stringify(item)}\n`).join("");
 }

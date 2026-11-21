@@ -9,6 +9,7 @@ export const SESSION_CHANGED_MESSAGE =
   "The session changed while preparing this turn. Send the message again.";
 
 export interface AgentPromptTurnRuntimeOptions {
+  startBlockReason?: () => string | undefined;
   requireAgent: () => Agent;
   getSettings: () => AgenticChatSettings;
   hasApiKey: () => boolean;
@@ -50,7 +51,7 @@ export class AgentPromptTurnRuntime {
   }
 
   async run(run: PromptTurnRun, expectedSessionToken?: string): Promise<void> {
-    const blockReason = this.blockReason();
+    const blockReason = this.options.startBlockReason?.() ?? this.blockReason();
     if (blockReason) {
       this.options.setErrorMessage(blockReason);
       this.options.notifyChange();

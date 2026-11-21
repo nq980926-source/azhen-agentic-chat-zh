@@ -1,3 +1,4 @@
+import { knowledgeToolBlocked, knowledgeFetchBlocked } from "./knowledge-mode";
 import type { App } from "obsidian";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { AgenticChatSettings } from "../settings";
@@ -10,7 +11,6 @@ import {
 import { type ApprovalPolicy, getPerToolApproval } from "./approval";
 import {
   AZHEN_BUSINESS_SKILLS_PACKAGE,
-  hasConfiguredAzhenKnowledgeMcp,
 } from "./azhen-knowledge-policy";
 import { isMcpToolName, mcpServerIdFromToolName } from "../mcp/tools";
 import { MUTATING_TOOLS } from "../tools/tool-contracts";
@@ -35,6 +35,7 @@ export interface ToolApprovalRequest {
   args: unknown;
   /** Optional tab/session label for background approvals (shown in modal title). */
   sessionLabel?: string;
+  allowRemember?: boolean;
 }
 
 export type ToolGateDecision = { block: true; reason: string; terminate?: boolean } | undefined;
@@ -240,6 +241,12 @@ export class AgentToolCallController {
     signal?: AbortSignal,
   ): Promise<ToolGateDecision> {
     const settings = this.getSettings();
+    const fetchTarget = (args as { url?: unknown })?.url;
+    if (knowledgeToolBlocked(settings, toolName) || (toolName === "fetch_url" && (typeof fetchTarget !== "string" || knowledgeFetchBlocked(settings, fetchTarget)))) {
+      const reason = "本地知识库模式禁止云端知识库文件操作及间接读取。";
+      await this.auditApproval({ decision: "denied", toolCallId, toolName, args, reason });
+      return { block: true, reason };
+    }
     const knowledgeBoundaryReason = this.localKnowledgeMutationBoundaryReason(settings, toolName, args);
     if (knowledgeBoundaryReason) {
       await this.auditApproval({
@@ -286,8 +293,9 @@ export class AgentToolCallController {
     // auto-approve: bulk destruction needs a plain per-path confirmation.
     // An explicit per-tool "allow" for delete still counts as standing
     // consent; anything else (YOLO blanket allow included) routes to ask.
+    const explicitLocalConsent = settings.knowledgeMode === "local" && (toolName === "delete" || toolName === "rename" || (toolName === "write" && (args as { overwrite?: boolean })?.overwrite === true));
     const effectivePolicy =
-      isRecursiveDeleteArgs(args) && policy === "allow" && getPerToolApproval(settings.approval, toolName) !== "allow"
+      explicitLocalConsent && policy !== "deny" ? "ask" : isRecursiveDeleteArgs(args) && policy === "allow" && getPerToolApproval(settings.approval, toolName) !== "allow"
         ? "ask"
         : policy;
     const label = this.labelForTool(toolName);
@@ -301,7 +309,7 @@ export class AgentToolCallController {
       return { block: true, reason: denial };
     }
     const choice = await this.confirmWithAudit(
-      { toolName, label, args },
+      { toolName, label, args, ...(explicitLocalConsent ? { allowRemember: false } : {}) },
       toolCallId,
       "The user declined this action.",
       signal,
@@ -310,7 +318,7 @@ export class AgentToolCallController {
   }
 
   /**
-   * When Azhen's Knowledge MCP is active, local Vault mutations are only a
+   * In explicit cloud knowledge mode, local Vault mutations are only a
    * Skills-maintenance surface. Knowledge-body writes must use the MCP path so
    * they retain approval, expected-hash checks, backups and operation receipts.
    * This is a hard boundary, not a mode or approval-policy refinement.
@@ -320,7 +328,7 @@ export class AgentToolCallController {
     toolName: string,
     args: unknown,
   ): string | undefined {
-    if (!MUTATING_TOOLS.has(toolName) || !hasConfiguredAzhenKnowledgeMcp(settings)) return undefined;
+    if (settings.knowledgeMode !== "cloud" || !MUTATING_TOOLS.has(toolName)) return undefined;
     const allowedRoot = normalizeFolderPath(
       `${settings.plugins.folder}/${AZHEN_BUSINESS_SKILLS_PACKAGE}`,
     );

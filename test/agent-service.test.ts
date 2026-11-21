@@ -246,6 +246,7 @@ function vaultBackedApp(): { app: App; vault: FakeVault } {
     const entry = vault.getAbstractFileByPath(path);
     return entry instanceof TFolder ? entry : null;
   };
+  Object.assign(vault.adapter, { getBasePath: () => process.cwd(), getFullPath: (path: string) => `${process.cwd()}/__in_memory_vault__/${path}` });
   vault.on = () => ({});
   vault.offref = () => {};
   return {
