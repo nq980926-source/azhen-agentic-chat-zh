@@ -337,7 +337,9 @@ For static-header servers, also set `AGENTIC_CHAT_E2E_MCP_HEADER_NAME` and
 bundled dependencies and adapted code.
 
 
-## 本地知识库测试版
+## 本地知识库模式（0.51.27）
+
+0.51.27 已基于通过 Android 验收的 0.51.27-local-test.1 发布，可通过 BRAT 更新；保留 0.51.26 供回退。
 
 知识库工作模式独立于 Safe/YOLO/Plan：新安装默认本地 Vault，已有 Knowledge 配置保留腾讯云模式并显示迁移提示。切换不迁移文件，不执行任何同步。本地模式禁用 Knowledge MCP 文件能力和云端财务核验；Memory 云端注入和联网搜索继续独立工作。
 
