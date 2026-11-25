@@ -1,0 +1,31 @@
+[Unit]
+Description=Azhen private photo authorization
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=azhen-photo-auth
+Group=azhen-photo-auth
+WorkingDirectory=@RELEASE@
+ExecStart=@RELEASE@/.venv/bin/python -m photo_auth.production --config /etc/azhen-photo-auth/config.json
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ReadWritePaths=/var/lib/azhen-photo-auth
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+LockPersonality=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

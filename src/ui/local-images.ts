@@ -1,4 +1,5 @@
 import { arrayBufferToBase64 } from "./image-attachments";
+import { MAX_PHOTO_BYTES } from "../photos/limits";
 
 export interface LocalImageAttachment {
   name: string;
@@ -10,10 +11,11 @@ export interface LocalImageAttachment {
 /** Read only into composer memory; never writes to the vault or uploads. */
 export async function readLocalImage(file: File): Promise<LocalImageAttachment> {
   if (!/\.(png|jpe?g|webp|gif)$/i.test(file.name)) throw new Error("仅支持 PNG、JPEG、WebP 和 GIF 图片");
-  if (!file.size || file.size > 10 * 1024 * 1024) throw new Error("单张图片必须大于 0 且不超过 10 MB");
+  if (!file.size || file.size > MAX_PHOTO_BYTES) throw new Error("单张图片必须大于 0 且不超过 10 MiB");
   let buffer: ArrayBuffer;
   try { buffer = await file.arrayBuffer(); }
   catch { throw new Error(`图片读取失败：${file.name}`); }
+  if (buffer.byteLength !== file.size || buffer.byteLength > MAX_PHOTO_BYTES) throw new Error("图片大小发生变化或超过 10 MiB");
   const b = new Uint8Array(buffer);
   const ascii = (start: number, end: number) => String.fromCharCode(...b.slice(start, end));
   const mimeType = b[0] === 137 && ascii(1, 4) === "PNG" ? "image/png"

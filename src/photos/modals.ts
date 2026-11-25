@@ -18,6 +18,7 @@ export class PhotoApprovalModal extends Modal {
     this.contentEl.createEl("p", { text: `共 ${this.source.images.length} 张候选照片；仅保存你本次选中的照片至私有 COS。普通 AI 对话继续使用原流程。` });
     if (this.source.purpose) this.contentEl.createEl("p", { text: `用途：${this.source.purpose}` });
     this.contentEl.createEl("p", { text: `关联本地笔记：${this.source.target || "未指定；上传后可复制引用或插入笔记"}` });
+    if (this.source.target) this.contentEl.createEl("p", { text: "批准后，确认成功的照片会自动追加到上述笔记；不覆盖正文。" });
     const count = this.contentEl.createEl("p", { cls: "azhen-photo-selected-count", text: "已选择 0 张" });
     let submit: ButtonComponent;
     this.source.images.forEach((image, index) => {
@@ -51,12 +52,18 @@ export class PhotoProgressModal extends Modal {
 
 /** Small receipt, not an album: stable references remain available if note insertion fails. */
 export class PhotoReceiptModal extends Modal {
-  constructor(app: App, private results: PhotoResult[], private insert: (path: string, refs: string) => Promise<void>, private target = "") { super(app); }
+  constructor(app: App, private results: PhotoResult[], private insert: (path: string, refs: string) => Promise<void>, private target = "", private linked = false, private retry?: () => void) { super(app); }
   onOpen(): void {
     this.setTitle("照片保存结果");
     const refs = this.results.filter(r => r.status === "confirmed").map(r => r.reference!).join("\n\n");
     this.contentEl.createEl("p", { text: this.results.length ? this.results.map(r => `照片 ${r.index + 1}：${r.status === "confirmed" ? "保存已确认" : `${r.status}（${r.error ?? "中断"}）`}`).join("；") : "已取消，未继续上传。" });
+    if (this.retry && this.results.some(result => result.status !== "confirmed")) new Setting(this.contentEl).addButton(b => b.setButtonText("重新选择并批准未完成照片").onClick(() => { this.close(); this.retry?.(); }));
     if (!refs) return;
+    if (this.linked) {
+      this.contentEl.createEl("p", { text: `已关联本地笔记：${this.target}。以后打开笔记会自动显示配图。` });
+      new Setting(this.contentEl).addButton(b => b.setButtonText("打开笔记").setCta().onClick(() => { void this.app.workspace.openLinkText(this.target, ""); this.close(); }));
+      return;
+    }
     this.contentEl.createEl("textarea", { cls: "azhen-photo-references", attr: { readonly: "", "aria-label": "稳定照片引用" } }).value = refs;
     new Setting(this.contentEl).addButton(b => b.setButtonText("复制引用").onClick(() => { void navigator.clipboard.writeText(refs).then(() => new Notice("照片引用已复制"), () => new Notice("无法访问剪贴板，可选择上方文本复制")); }));
     new Setting(this.contentEl).setName("目标本地笔记完整路径").setDesc("只向已有 Markdown 追加引用；可重试，不覆盖正文。AI 写日记可直接使用这些引用。").addText(t => t.setPlaceholder("日记/2026-11-24.md").setValue(this.target).onChange(v => { this.target = v; }));

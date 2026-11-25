@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+*.sqlite*
+credentials.json
+config.json

@@ -1470,8 +1470,8 @@ export class ChatView extends ItemView {
         try { await preview.decode(); } catch { throw new Error(`图片无法解码：${file.name}`); }
         if (pending.some((item) => item.data === image.data)) continue;
         if (pending.length >= 4) throw new Error("最多添加 4 张图片");
-        if (pending.reduce((sum, item) => sum + item.size, image.size) > 20 * 1024 * 1024) {
-          throw new Error("图片总大小不能超过 20 MB");
+        if (pending.reduce((sum, item) => sum + item.size, image.size) > 40 * 1024 * 1024) {
+          throw new Error("图片合计不能超过 40 MiB");
         }
         pending.push(image);
       } catch (error) {

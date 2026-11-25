@@ -1,21 +1,21 @@
 import { PhotoClient, PhotoError } from "./client";
 interface Entry { blob: Blob; used: number; references: number; url?: string }
 export interface PhotoHandle { url: string; release(): void }
-/** Private display cache: memory only, 24 MiB total, 5 minute idle TTL, max two reads. */
+/** Private display cache: memory only, 40 MiB total, 5 minute idle TTL, max two reads. */
 export class PhotoCache {
   private entries = new Map<string, Entry>();
   private pending = new Map<string, Promise<Entry>>();
   private controllers = new Set<AbortController>();
   private urls = new Set<string>();
-  private cleared = new Set<() => void>();
+  private cleared = new Set<(reload: boolean) => void>();
   private disposed = false;
   private generation = 0;
   private handles = 0;
   private activeReads = 0;
   private waiting: Array<() => void> = [];
-  constructor(private client: PhotoClient, private limit = 24 * 1024 * 1024, private ttl = 5 * 60000, private now: () => number = Date.now) {}
+  constructor(private client: PhotoClient, private limit = 40 * 1024 * 1024, private ttl = 5 * 60000, private now: () => number = Date.now) {}
   get closed(): boolean { return this.disposed; }
-  onClear(callback: () => void): () => void { this.cleared.add(callback); return () => this.cleared.delete(callback); }
+  onClear(callback: (reload: boolean) => void): () => void { this.cleared.add(callback); return () => this.cleared.delete(callback); }
   private evict(): void { for (const [id, entry] of this.entries) if (!entry.references && this.now() - entry.used >= this.ttl) this.entries.delete(id); }
   get byteSize(): number { this.evict(); return [...this.entries.values()].reduce((n, e) => n + e.blob.size, 0); }
   async acquire(id: string, signal?: AbortSignal): Promise<PhotoHandle> {
@@ -59,6 +59,6 @@ export class PhotoCache {
     let released = false;
     return { url, release: () => { if (released) return; released = true; entry.references--; this.handles--; if (!entry.references) { if (this.urls.has(url)) URL.revokeObjectURL(url); this.urls.delete(url); entry.url = undefined; } entry.used = this.now(); this.evict(); } };
   }
-  clear(): void { this.generation++; for (const c of this.controllers) c.abort(); this.controllers.clear(); for (const u of this.urls) URL.revokeObjectURL(u); this.urls.clear(); this.entries.clear(); this.pending.clear(); for (const callback of this.cleared) callback(); }
+  clear(reload = false): void { this.generation++; for (const c of this.controllers) c.abort(); this.controllers.clear(); for (const u of this.urls) URL.revokeObjectURL(u); this.urls.clear(); this.entries.clear(); this.pending.clear(); for (const callback of this.cleared) callback(reload); }
   close(): void { this.disposed = true; this.clear(); this.cleared.clear(); }
 }

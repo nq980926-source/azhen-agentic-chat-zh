@@ -1,0 +1,10 @@
+{
+  "version": "2.0",
+  "statement": [
+    {
+      "effect": "allow",
+      "action": ["name/cos:PutObject", "name/cos:GetObject", "name/cos:HeadObject"],
+      "resource": ["qcs::cos:ap-guangzhou:uid/1301105804:azhen-photos-1301105804/private-photos/v1/*"]
+    }
+  ]
+}

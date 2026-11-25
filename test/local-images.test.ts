@@ -16,7 +16,7 @@ describe("local image composer", () => {
   });
   it("rejects format, oversize, corrupt and read failures", async () => {
     await expect(readLocalImage(file("a.pdf", [1]))).rejects.toThrow("仅支持");
-    await expect(readLocalImage(file("a.png", [1], 11*1024*1024))).rejects.toThrow("10 MB");
+    await expect(readLocalImage(file("a.png", [1], 11*1024*1024))).rejects.toThrow("10 MiB");
     await expect(readLocalImage(file("a.png", [1]))).rejects.toThrow("无效");
     await expect(readLocalImage({ name: "a.png", size: 5, arrayBuffer: async () => { throw Error(); } } as unknown as File)).rejects.toThrow("读取失败");
   });

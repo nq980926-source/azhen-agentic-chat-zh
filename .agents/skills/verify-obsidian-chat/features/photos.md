@@ -1,38 +1,28 @@
-# Optional private photos
+# Daily private photos
 
 ## Sub-features
 
-- Explicit per-request selection and private COS persistence; no automatic image mirroring.
-- Stable photoId Markdown, native Reading View and existing chat rendering.
-- In-memory display cache and idempotent task metadata on the current device.
+Original bytes: 10 MiB each, 4 photos / 40 MiB batch. Per-device pairing; stable photoId. Native Live Preview and Reading View reuse one renderer/cache. Existing local Vault safety remains unchanged.
 
 ## How to get to it (user view)
 
-Enable COS client in Agent settings and select a local SecretStorage token; sent chat photos offer 保存照片至 COS. The save_photos tool also opens the same explicit approval. Select each photo, confirm, then copy or insert confirmed references.
+Pair once per device in photo settings. On a Markdown note use the ribbon image button, command `agentic-chat:save-note-photos`, or settings picker. Explicitly approve each selection; confirmed references append to the approved note. Sent chat save and save_photos keep the same approval gate.
 
 ## Driving it with the probe harness
 
-Run npm run verify -- e2e test/e2e/specs/private-photos.e2e.ts in an isolated vault. The spec substitutes only the transport with Mock COS and uses the original chat and Markdown APIs. No production cloud requests.
+Use the isolated native spec `test/e2e/specs/photos-daily-ui.e2e.ts`, desktop or mobile viewport, with no production/COS calls. Direct commands `node scripts/build-e2e.mjs` then `node --import tsx scripts/run-e2e.ts --spec test/e2e/specs/photos-daily-ui.e2e.ts` avoid the existing Windows path-with-spaces issue in the generic wrapper; that wrapper was not refactored.
 
 ## Proof
 
 | entry point | source | proof | status |
 |---|---|---|---|
-| Photo settings and SecretStorage | `src/photos/settings.ts:4` | `test/e2e/specs/private-photos.e2e.ts:150` (scripted Windows / mobile emulation; actual Android pending) | `partial` |
-| Sent chat photo save button and per-photo approval | `src/ui/chat-view.ts:3165` | `test/e2e/specs/private-photos.e2e.ts:80` (scripted Windows / mobile emulation; actual Android pending) | `partial` |
-| AI save_photos (YOLO still asks) | `src/photos/tool.ts:15` | `test/e2e/specs/private-photos.e2e.ts:127` (scripted Windows / mobile emulation; actual Android pending) | `partial` |
-| Reading View and chat Markdown | `src/photos/renderer.ts:71` | `test/e2e/specs/private-photos.e2e.ts:94` (scripted Windows / mobile emulation; actual Android pending) | `partial` |
-| Offline retry and resource release | `src/photos/renderer.ts:43` | `test/e2e/specs/private-photos.e2e.ts:107` (scripted Windows / mobile emulation; actual Android pending) | `partial` |
-| Session/tab interruption | `src/photos/tasks.ts:39` | `test/e2e/specs/private-photos.e2e.ts:143` (scripted Windows / mobile emulation; actual Android pending) | `partial` |
+| Native note command and unpaired guard | `src/photos/runtime.ts:32` | `test/e2e/specs/photos-daily-ui.e2e.ts:8` actual Obsidian, note remains unchanged | `covered` |
+| One-time device form UI | `src/photos/settings.ts:5` | `test/e2e/specs/photos-daily-ui.e2e.ts:21` actual Obsidian; not a cloud pairing claim | `covered` |
+| Native preview renderer wiring | `src/photos/editor.ts:8` | `test/e2e/specs/photos-daily-ui.e2e.ts:29` actual Obsidian; production pixels not claimed | `partial` |
+| File and batch bounds | `src/photos/limits.ts:4` | `test/photos/daily-limits.test.ts:8` native crypto and byte contract | `partial` |
 
 ## Gotchas
 
-- Production prefix, CAM, trusted TLS, CORS and feature switches require separate authorization. Mock confirmed is not real COS acceptance.
-- Android device and provider live tests remain pending. Mobile emulation is not Android hardware.
-- Source Mode preserves the literal reference. Live Preview is separately observed; Reading View is the supported image display surface for this candidate. No editor extension or second note reader.
-- Local/cloud knowledge boundary, Memory, web search, models and existing chat history remain independent.
-- No Markdown goes to COS. No permanent signed URLs, credentials or photo bytes in task metadata. No disk image cache or new sync.
+Photo pairing requires Obsidian 1.11.5+ at-rest secret storage, while the rest of the plugin keeps its original floor. Device secret references and enable flags are local-only, not Vault settings. Standalone Live Preview photo references become editable text on the cursor line; fenced code/frontmatter/Source Mode remain literal.
 
-## photos-test.2 isolated integration candidate
-
-User-authorized scope: replace the production-prefix constant with the single confirmed isolated-test/s2-05/492d2883-a19e-4929-bedd-86db673b7f51/ directory and show window.origin / location.origin in photo settings. No Mock, old regression, or native UI reruns requested this round; only build/version/artifact verification. Actual Android Origin display and live upload remain pending device acceptance. Previous proof rows describe photos-test.1 and do not establish acceptance of this candidate.
+Production CAM, namespace, CORS, persistent service/backup/renewal units require the single approval in `server/photos/PRODUCTION_CHANGE_REQUEST.md`. Old temporary single-image scripts are retired for production. No production credentials, URLs, image payloads or sessions belong in commits. See `docs/releases/0.51.28-rc.1.md` for offline/backup limits; no production upload success is claimed by these UI/byte proofs.

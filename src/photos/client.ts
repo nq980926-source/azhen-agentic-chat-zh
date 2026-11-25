@@ -1,11 +1,13 @@
 import { sha256 } from "./digests";
+import { MAX_PHOTO_BYTES } from "./limits";
+export { MAX_PHOTO_BYTES, MAX_PHOTO_BATCH_BYTES, MAX_PHOTO_COUNT } from "./limits";
 
 export interface PhotoSettings { enabled: boolean; endpoint: string; tokenSecretId: string }
 export const DEFAULT_PHOTOS: PhotoSettings = { enabled: false, endpoint: "https://106.55.92.40/photos/v1/", tokenSecretId: "agentic-chat-photos-token" };
-// This build is pinned to the one existing, user-approved integration directory.
-export const PHOTO_PREFIX = "isolated-test/s2-05/492d2883-a19e-4929-bedd-86db673b7f51/";
+// Production writes are pinned; the previously approved isolated run is read-only.
+export const PHOTO_PREFIX = "private-photos/v1/";
+export const LEGACY_PHOTO_PREFIX = "isolated-test/s2-05/492d2883-a19e-4929-bedd-86db673b7f51/";
 export const PHOTO_HOST = "azhen-photos-1301105804.cos.ap-guangzhou.myqcloud.com";
-export const MAX_PHOTO_BYTES = 2 * 1024 * 1024;
 export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 export const PHOTO_MIMES: Record<string, string> = { "image/png": "png", "image/jpeg": "jpg", "image/webp": "webp", "image/gif": "gif" };
 export class PhotoError extends Error { constructor(readonly code: string, readonly status = 0) { super(`照片服务：${code}${status ? ` (${status})` : ""}`); } }
@@ -26,7 +28,7 @@ export type PhotoWire = (url: string, method: string, headers: Record<string, st
 export const photoWire: PhotoWire = async (url, method, headers, body, signal, limit) => {
   const controller = new AbortController();
   const abort = () => controller.abort(); signal?.addEventListener("abort", abort, { once: true });
-  const timer = window.setTimeout(abort, 25000);
+  const timer = window.setTimeout(abort, method === "PUT" ? 300000 : 120000);
   try {
     if (signal?.aborted) throw new PhotoError("cancelled");
     // Native requestUrl cannot enforce abort or redirect:error for private grants.
@@ -56,8 +58,9 @@ export function validateObjectGrant(grant: Grant, method: "GET" | "PUT", id: str
   if (settings.endpoint !== DEFAULT_PHOTOS.endpoint || grant?.method !== method || !Number.isFinite(grant.expiresAt) || !Number.isFinite(grant.serverTime) || grant.expiresAt <= grant.serverTime || grant.expiresAt - grant.serverTime > (method === "PUT" ? 600 : 300)) throw new PhotoError("invalid_grant");
   photoId(id);
   let u: URL; try { u = new URL(grant.url); } catch { throw new PhotoError("invalid_object_url"); }
-  const path = new RegExp(`^/${PHOTO_PREFIX}photos/v1/[a-f0-9]{24}/${id}/original\\.(png|jpg|webp|gif)$`);
-  if (u.protocol !== "https:" || u.host !== PHOTO_HOST || u.username || u.password || u.hash || !path.test(u.pathname) || u.pathname.includes("%") || grant.url.includes("\\") || !u.search) throw new PhotoError("object_scope_rejected");
+  const prefixes = method === "PUT" ? [PHOTO_PREFIX] : [PHOTO_PREFIX, LEGACY_PHOTO_PREFIX];
+  const allowedPath = prefixes.some(prefix => new RegExp(`^/${prefix}photos/v1/[a-f0-9]{24}/${id}/original\\.(png|jpg|webp|gif)$`).test(u.pathname));
+  if (u.protocol !== "https:" || u.host !== PHOTO_HOST || u.username || u.password || u.hash || !allowedPath || u.pathname.includes("%") || grant.url.includes("\\") || !u.search) throw new PhotoError("object_scope_rejected");
   const keys = [...u.searchParams.keys()];
   if (new Set(keys).size !== keys.length || keys.some(k => !/^q-(sign-algorithm|ak|sign-time|key-time|header-list|url-param-list|signature)$/.test(k)) || u.searchParams.get("q-sign-algorithm") !== "sha1" || !/^[a-f0-9]{40}$/.test(u.searchParams.get("q-signature") ?? "")) throw new PhotoError("signature_parameters_rejected");
   const times = (u.searchParams.get("q-sign-time") ?? "").split(";").map(Number);
@@ -76,7 +79,7 @@ export function validateObjectGrant(grant: Grant, method: "GET" | "PUT", id: str
 
 export class PhotoClient {
   constructor(private settings: () => PhotoSettings, private token: () => string, private wire: PhotoWire = photoWire) {}
-  get scope(): string { const s = this.settings(); return `${s.endpoint}|${s.tokenSecretId}`; }
+  get scope(): string { const s = this.settings(); return `${s.endpoint}|${PHOTO_PREFIX}|${s.tokenSecretId}`; }
   ready(): void {
     const s = this.settings(); const token = this.token();
     if (!s.enabled || s.endpoint !== DEFAULT_PHOTOS.endpoint) throw new PhotoError("disabled");
@@ -94,6 +97,14 @@ export class PhotoClient {
   private intent(value: Intent, op?: string): Intent {
     if (!value || (op && value.operationId !== op) || !UUID.test(value.operationId) || !UUID.test(value.photoId) || !["reserved", "confirmed", "unknown", "uploaded", "failed", "expired"].includes(value.state) || !Number.isSafeInteger(value.bytes) || value.bytes < 1 || value.bytes > MAX_PHOTO_BYTES || !PHOTO_MIMES[value.mime] || !/^[a-f0-9]{64}$/.test(value.sha256)) throw new PhotoError("invalid_intent");
     return value;
+  }
+  async pair(code: string, name: string): Promise<string> {
+    const result = await this.wire(DEFAULT_PHOTOS.endpoint + "devices/pair", "POST", { "Content-Type": "application/json" }, new TextEncoder().encode(JSON.stringify({ code, name })).buffer, undefined, 4096);
+    if (result.status !== 200) throw new PhotoError("pairing_rejected", result.status);
+    let token: unknown;
+    try { token = (JSON.parse(new TextDecoder().decode(result.body)) as { data: { token: unknown } }).data.token; } catch { throw new PhotoError("invalid_pairing_response"); }
+    if (typeof token !== "string" || !/^azp_[A-Za-z0-9_-]{43}$/.test(token)) throw new PhotoError("invalid_pairing_response");
+    return token;
   }
   async create(params: UploadParameters, signal?: AbortSignal): Promise<Intent> { return this.intent(await this.rpc("uploads", params, signal), params.operationId); }
   async action(op: string, action: "complete" | "renew", data: unknown, signal?: AbortSignal): Promise<Intent> { return this.intent(await this.rpc(`uploads/${photoId(op)}/${action}`, data, signal), op); }

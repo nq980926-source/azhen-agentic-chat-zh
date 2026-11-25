@@ -7,17 +7,44 @@ export class PhotoRenderChild extends MarkdownRenderChild {
   private handle?: PhotoHandle;
   private alive = true;
   private attempt = 0;
+  private loading = false;
   constructor(container: HTMLElement, private cache: PhotoCache, private id: string, private caption: string, private chat = false, private detached?: () => void) { super(container); }
   onload(): void {
     this.alive = true; this.controller = new AbortController();
-    this.register(this.cache.onClear(() => { this.attempt++; this.handle?.release(); this.handle = undefined; if (this.cache.closed) this.unload(); else if (this.alive) this.placeholder("cache_cleared_use_retry"); }));
+    this.register(this.cache.onClear(reload => {
+      this.attempt++; this.loading = false; this.controller.abort(); this.controller = new AbortController();
+      this.handle?.release(); this.handle = undefined;
+      if (this.cache.closed) this.unload();
+      else if (this.alive) {
+        this.placeholder("cache_cleared_use_retry");
+        const rect = this.containerEl.getBoundingClientRect();
+        if (reload && this.containerEl.isConnected && rect.width > 0 && rect.height > 0 && rect.bottom >= -200 && rect.top <= (this.containerEl.ownerDocument.defaultView?.innerHeight ?? 0) + 200) void this.loadPhoto();
+      }
+    }));
     // Chat re-renders can detach nodes before their shared component unloads.
     // Native mobile previews can load a component before attaching its fragment.
     let mounted = false;
+    const visibility = typeof IntersectionObserver === "undefined" ? undefined : new IntersectionObserver(entries => {
+      for (const entry of entries) {
+        if (!mounted || !this.alive) continue;
+        if (entry.isIntersecting) {
+          if (this.controller.signal.aborted) this.controller = new AbortController();
+          if (!this.handle && !this.loading) void this.loadPhoto();
+        } else if (this.handle || this.loading) {
+          this.containerEl.style.minHeight = `${Math.ceil(this.containerEl.getBoundingClientRect().height)}px`;
+          this.attempt++; this.loading = false; this.controller.abort(); this.handle?.release(); this.handle = undefined;
+          this.containerEl.empty(); this.containerEl.createSpan({ text: "照片在可见时自动加载" });
+        }
+      }
+    }, { rootMargin: "200px" });
+    this.register(() => visibility?.disconnect());
     const connected = () => {
-      if (!mounted && this.containerEl.isConnected) { mounted = true; this.controller = new AbortController(); void this.loadPhoto(); }
+      if (!mounted && this.containerEl.isConnected) {
+        mounted = true; this.controller = new AbortController();
+        if (visibility) visibility.observe(this.containerEl); else void this.loadPhoto();
+      }
       else if (mounted && !this.containerEl.isConnected) {
-        mounted = false; this.attempt++; this.controller.abort(); this.handle?.release(); this.handle = undefined;
+        mounted = false; this.attempt++; this.loading = false; visibility?.unobserve(this.containerEl); this.controller.abort(); this.handle?.release(); this.handle = undefined;
         // Native previews can park and reconnect their DOM when changing mode.
         // Their context owns unloading. Chat replaces old DOM permanently.
         if (this.chat) this.unload();
@@ -29,6 +56,8 @@ export class PhotoRenderChild extends MarkdownRenderChild {
     connected();
   }
   private async loadPhoto(): Promise<void> {
+    if (this.loading) return;
+    this.loading = true;
     const attempt = ++this.attempt;
     this.containerEl.empty(); this.containerEl.createSpan({ text: "照片加载中…" });
     try {
@@ -39,6 +68,7 @@ export class PhotoRenderChild extends MarkdownRenderChild {
       const image = this.containerEl.createEl("img", { cls: "azhen-photo-image", attr: { src: handle.url, alt: this.caption, loading: "lazy", referrerpolicy: "no-referrer" } });
       image.addEventListener("error", () => { this.handle?.release(); this.handle = undefined; this.placeholder("image_decode_failed"); }, { once: true });
     } catch (error) { if (this.alive && attempt === this.attempt && !this.controller.signal.aborted) this.placeholder(error instanceof PhotoError ? error.code : "unavailable"); }
+    finally { if (attempt === this.attempt) this.loading = false; }
   }
   private placeholder(reason: string): void {
     this.containerEl.empty();

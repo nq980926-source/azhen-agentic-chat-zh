@@ -74,6 +74,7 @@ export type { SummarizeFn } from "./compaction-runtime";
 
 export interface AgentServiceOptions {
   photoSave?: import("../photos/tool").SavePhotos;
+  photoEnabled?: () => boolean;
   knowledgeTransitionActive?: () => boolean;
   app: App;
   getSettings: () => AgenticChatSettings;
@@ -201,7 +202,7 @@ export class AgentService {
     });
     this.runtimeResources = new AgentRuntimeResourceState({
       app: this.app,
-      photoTools: () => options.photoSave && this.getSettings().photos?.enabled && this.getSettings().knowledgeMode === "local"
+      photoTools: () => options.photoSave && (options.photoEnabled?.() ?? this.getSettings().photos?.enabled) && this.getSettings().knowledgeMode === "local"
         ? [createPhotoTool(
             options.photoSave,
             () => this.getMessages(),

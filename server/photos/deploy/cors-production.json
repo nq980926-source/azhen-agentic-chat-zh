@@ -1,0 +1,10 @@
+{
+  "photoApiOrigins": ["http://localhost", "app://obsidian.md"],
+  "photoApiMethods": ["GET", "POST", "OPTIONS"],
+  "photoApiHeaders": ["Authorization", "Content-Type"],
+  "bucketAdditionalOrigin": "app://obsidian.md",
+  "bucketMethods": ["PUT", "GET"],
+  "bucketHeaders": ["content-type", "content-md5", "x-cos-forbid-overwrite", "x-cos-meta-sha256", "x-cos-meta-content-md5", "x-cos-acl"],
+  "maxAgeSeconds": 300,
+  "allowCredentials": false
+}

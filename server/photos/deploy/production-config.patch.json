@@ -1,0 +1,7 @@
+{
+  "deploymentMode": "production",
+  "prefix": "private-photos/v1/",
+  "uploadsEnabled": true,
+  "readsEnabled": true,
+  "headNetworkEnabled": true
+}

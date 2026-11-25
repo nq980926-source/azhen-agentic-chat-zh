@@ -1,6 +1,7 @@
 import { bytesFromBase64, contentMd5, sha256 } from "./digests";
 import { sha256Hex } from "../utils/sha256";
-import { MAX_PHOTO_BYTES, PHOTO_MIMES, PhotoClient, PhotoError, photoReference, UUID, type Intent, type UploadParameters } from "./client";
+import { PHOTO_MIMES, PhotoClient, PhotoError, photoReference, UUID, type Intent, type UploadParameters } from "./client";
+import { validatePhotoSelection } from "./limits";
 
 export interface PhotoImage { name: string; data: string; mimeType: string; size: number }
 export interface PhotoSource { key: string; images: PhotoImage[]; purpose?: string; target?: string }
@@ -28,7 +29,8 @@ export class PhotoTasks {
   async save(source: PhotoSource, approve: PhotoApproval, signal?: AbortSignal, valid: () => boolean = () => true): Promise<PhotoResult[]> {
     if (this.disposed || !this.permitted()) throw new PhotoError("local_mode_required");
     this.client.ready();
-    if (!source.key || source.key.length > 512 || !source.images.length || source.images.length > 4 || source.images.some(i => !PHOTO_MIMES[i.mimeType] || !i.size || i.size > MAX_PHOTO_BYTES) || source.images.reduce((n, i) => n + i.size, 0) > 8 * 1024 * 1024) throw new PhotoError("selection_limit_2MiB_each_4_photos");
+    validatePhotoSelection(source.images);
+    if (!source.key || source.key.length > 512 || source.images.some(i => !PHOTO_MIMES[i.mimeType])) throw new PhotoError("invalid_photo_source");
     const scope = this.client.scope;
     const busyKey = `${scope}|${source.key}`;
     if (this.busy.has(busyKey)) throw new PhotoError("task_already_active");

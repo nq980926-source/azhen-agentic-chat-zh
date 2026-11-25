@@ -169,6 +169,7 @@ export default class AgenticChatPlugin extends Plugin {
     return new AgentService({
       app: this.app,
       photoSave: (source, signal, valid) => { if (!this.photos) throw new Error("照片功能不可用"); return this.photos.save(source, signal, valid); },
+      photoEnabled: () => this.photos?.enabled() ?? false,
       getSettings: () => this.settings,
       sessionManager,
       confirmToolCall: options.confirmToolCall ?? ((request, signal) => this.confirmToolCall(request, signal)),
