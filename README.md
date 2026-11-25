@@ -1,5 +1,7 @@
 # Agentic Chat for Obsidian
 
+当前隔离联调候选：**0.51.28-photos-test.2**，基于 photos-test.1，仅允许用户确认的唯一隔离前缀，并显示本机 WebView Origin。[安装说明与待批准的服务端变更](docs/development/photos-isolated-test2.md)。三个服务端功能开关仍关闭，客户端默认不开启，尚未完成 Android 真实链路验收。Latest 正式版仍为 0.51.27。
+
 > **Experimental — under heavy development.** APIs, settings, and behavior change frequently. Pin a version if you need stability.
 
 A **privacy-first, agent-led AI chat** in Obsidian's right sidebar. Instead of a plain chatbot, you get an agent that *acts on your vault*: it reads, searches, writes, edits, renames, traverses links, and reads/writes frontmatter through typed tools — and every tool call is rendered inline in the chat, so you always see exactly what the agent is doing.

@@ -32,3 +32,7 @@ Run npm run verify -- e2e test/e2e/specs/private-photos.e2e.ts in an isolated va
 - Source Mode preserves the literal reference. Live Preview is separately observed; Reading View is the supported image display surface for this candidate. No editor extension or second note reader.
 - Local/cloud knowledge boundary, Memory, web search, models and existing chat history remain independent.
 - No Markdown goes to COS. No permanent signed URLs, credentials or photo bytes in task metadata. No disk image cache or new sync.
+
+## photos-test.2 isolated integration candidate
+
+User-authorized scope: replace the production-prefix constant with the single confirmed isolated-test/s2-05/492d2883-a19e-4929-bedd-86db673b7f51/ directory and show window.origin / location.origin in photo settings. No Mock, old regression, or native UI reruns requested this round; only build/version/artifact verification. Actual Android Origin display and live upload remain pending device acceptance. Previous proof rows describe photos-test.1 and do not establish acceptance of this candidate.

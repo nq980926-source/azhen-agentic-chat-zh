@@ -1,14 +1,18 @@
 import { Notice, SecretComponent, Setting } from "obsidian";
 import type AgenticChatPlugin from "../main";
-import { DEFAULT_PHOTOS } from "./client";
+import { DEFAULT_PHOTOS, PHOTO_PREFIX } from "./client";
 export function renderPhotoSettings(container: HTMLElement, plugin: AgenticChatPlugin): void {
   new Setting(container).setName("COS 按需照片").setHeading();
-  container.createEl("p", { text: "默认不上传。仅本地知识库模式可申请保存，每次须选择照片并确认。服务器正式目录、TLS/CORS 和开关待单独授权启用；当前测试版不代表真实云端已验收。每张最多 2 MiB，每批最多 4 张。" });
+  container.createEl("p", { text: "默认不上传。仅本地知识库模式可申请保存，每次须选择照片并确认。本版仅供现有隔离目录联调，服务端 CORS 和开关仍需单独批准；尚未完成 Android 真实链路验收。每张最多 2 MiB，每批最多 4 张。" });
   new Setting(container).setName("启用照片服务客户端").setDesc("开启仅允许加载照片和发起批准申请，不授予自动上传权限。不改变服务器开关。").addToggle(t => t.setValue(plugin.settings.photos.enabled).onChange(async value => {
     if (plugin.photos?.active) { t.setValue(plugin.settings.photos.enabled); new Notice("照片任务正在批准或执行，请先完成或取消"); return; }
     plugin.settings.photos.enabled = value; plugin.photos?.changed(); await plugin.saveSettings();
   }));
-  new Setting(container).setName("照片 HTTPS 授权接口").setDesc(DEFAULT_PHOTOS.endpoint + " · 仅允许此接口及固定广州私有 Bucket、private-photos/v1/ 正式前缀。拒绝隔离测试目录、HTTP 和跳转。");
+  new Setting(container).setName("照片 HTTPS 授权接口").setDesc(DEFAULT_PHOTOS.endpoint + " · 固定广州私有 Bucket，仅允许本次隔离前缀：" + PHOTO_PREFIX + "。拒绝其他目录、HTTP 和跳转。");
+  new Setting(container).setName("本机 WebView Origin").setDesc(
+    `页面安全源（window.origin）：${window.origin}；URL 源（location.origin）：${window.location.origin}。` +
+    "只读显示，不发送请求或保存凭据。请提供此非敏感值用于 CORS；若显示 null，不要改填 *，以真实预检的 Origin 为准。",
+  );
   const storage = (plugin.app as unknown as { secretStorage?: { getSecret?: unknown } }).secretStorage;
   if (typeof storage?.getSecret === "function") {
     new Setting(container).setName("照片服务独立 Token").setDesc("使用 Obsidian SecretStorage；插件设置仅保存凭据名称。每台设备分别配置，不将 Token 写入笔记或同步。不要填写 COS SecretId/SecretKey。").addComponent(el => new SecretComponent(plugin.app, el).setValue(plugin.settings.photos.tokenSecretId).onChange(async id => {

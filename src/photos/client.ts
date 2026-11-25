@@ -2,7 +2,8 @@ import { sha256 } from "./digests";
 
 export interface PhotoSettings { enabled: boolean; endpoint: string; tokenSecretId: string }
 export const DEFAULT_PHOTOS: PhotoSettings = { enabled: false, endpoint: "https://106.55.92.40/photos/v1/", tokenSecretId: "agentic-chat-photos-token" };
-export const PHOTO_PREFIX = "private-photos/v1/";
+// This build is pinned to the one existing, user-approved integration directory.
+export const PHOTO_PREFIX = "isolated-test/s2-05/492d2883-a19e-4929-bedd-86db673b7f51/";
 export const PHOTO_HOST = "azhen-photos-1301105804.cos.ap-guangzhou.myqcloud.com";
 export const MAX_PHOTO_BYTES = 2 * 1024 * 1024;
 export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
