@@ -81,3 +81,5 @@ paths must exist in the repository.
   `fast`.
 - The checker cannot judge whether a test asserts the user action. A reviewer
   owns that judgment; a wrong `covered` is still a review finding.
+
+- [Optional private photos](./photos.md)

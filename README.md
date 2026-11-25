@@ -344,3 +344,9 @@ bundled dependencies and adapted code.
 知识库工作模式独立于 Safe/YOLO/Plan：新安装默认本地 Vault，已有 Knowledge 配置保留腾讯云模式并显示迁移提示。切换不迁移文件，不执行任何同步。本地模式禁用 Knowledge MCP 文件能力和云端财务核验；Memory 云端注入和联网搜索继续独立工作。
 
 Desktop file safety uses the guard `if (!Platform.isDesktopApp) return;` before optional realpath checks: never load Node modules on mobile. Windows external symlinks/junctions are refused. Standard Android Vault access uses Obsidian's scoped adapter. No portable-filesystem or other custom adapter compatibility claim is made.
+
+## COS 按需照片测试版 0.51.28-photos-test.1
+
+基于正式版 0.51.27，保持本地知识库优先。照片服务客户端默认关闭；聊天照片只有逐次明确选中并确认才会申请上传授权。成功确认后生成 azhen-photo://v1/<photoId> 稳定引用，笔记正文仍由原有 Vault 工具保存。
+
+[差异审查及生产待授权项](docs/development/local-cos-review.md) · [测试结果、安装和回退](docs/development/local-cos-release.md)。服务端正式目录及真实 Android/Windows 云端验收尚未完成，不能将 Mock 结果视为正式启用。Latest 正式版继续为 0.51.27。

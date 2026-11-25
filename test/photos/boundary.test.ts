@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { PhotoClient, PhotoError, validateObjectGrant, DEFAULT_PHOTOS } from '../../src/photos/client';
+import { PhotoClient, validateObjectGrant, DEFAULT_PHOTOS } from '../../src/photos/client';
 import { PhotoTasks } from '../../src/photos/tasks';
 describe('approved private photo boundary', () => {
  it('rejects a grant outside the exact private bucket prefix',()=>{

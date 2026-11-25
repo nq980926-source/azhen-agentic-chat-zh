@@ -6,6 +6,7 @@ import {
   type StreamFn,
   type ThinkingLevel,
 } from "@earendil-works/pi-agent-core";
+import { createPhotoTool } from "../photos/tool";
 import type { Skill } from "../skills/skill-prompt";
 import { type AssistantMessage, type ImageContent, type Usage, type UserMessage } from "@earendil-works/pi-ai";
 import type { AgenticChatSettings } from "../settings";
@@ -72,6 +73,7 @@ export type { ToolApprovalRequest } from "./tool-call-controller";
 export type { SummarizeFn } from "./compaction-runtime";
 
 export interface AgentServiceOptions {
+  photoSave?: import("../photos/tool").SavePhotos;
   knowledgeTransitionActive?: () => boolean;
   app: App;
   getSettings: () => AgenticChatSettings;
@@ -199,6 +201,15 @@ export class AgentService {
     });
     this.runtimeResources = new AgentRuntimeResourceState({
       app: this.app,
+      photoTools: () => options.photoSave && this.getSettings().photos?.enabled && this.getSettings().knowledgeMode === "local"
+        ? [createPhotoTool(
+            options.photoSave,
+            () => this.getMessages(),
+            () => this.sessions.info?.id ?? this.getSessionToken(),
+            () => this.getSessionToken(),
+            () => this.getSettings().knowledgeMode === "local" && this.getSettings().mode !== "plan" && !options.knowledgeTransitionActive?.(),
+          )]
+        : [],
       getSettings: this.getSettings,
       readMemo: this.sessionState.readMemo,
       webFetch: this.webFetch,

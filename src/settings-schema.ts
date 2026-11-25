@@ -1,3 +1,4 @@
+import { DEFAULT_PHOTOS, healPhotos, type PhotoSettings } from "./photos/client";
 import { migrateKnowledgeMode, type KnowledgeMode } from "./agent/knowledge-mode";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import {
@@ -86,6 +87,7 @@ export interface AgenticChatSettings {
    */
   mode: AgentMode;
   knowledgeMode: KnowledgeMode;
+  photos: PhotoSettings;
   knowledgeModeMigration?: "local" | "cloud";
   /** How the assistant talks: a built-in system-prompt overlay. */
   outputStyle: OutputStyle;
@@ -190,6 +192,7 @@ export const DEFAULT_SETTINGS: AgenticChatSettings = {
   systemPrompt: DEFAULT_SYSTEM_PROMPT,
   mode: DEFAULT_MODE,
   knowledgeMode: "local",
+  photos: { ...DEFAULT_PHOTOS },
   outputStyle: DEFAULT_OUTPUT_STYLE,
   // Strongest privacy out of the box: zero data retention, no prompt
   // logging/training, and any fallback provider must also satisfy both.
@@ -255,6 +258,7 @@ export function mergeSettings(stored: Partial<AgenticChatSettings> | null | unde
     ),
     openaiCompatibleApiKey: typeof stored?.openaiCompatibleApiKey === "string" ? stored.openaiCompatibleApiKey : "",
     mode: healMode(stored?.mode),
+    photos: healPhotos(stored?.photos),
     knowledgeMode: migrateKnowledgeMode(stored, { mcp: healedMcp, plugins: healedPlugins }),
     knowledgeModeMigration: stored?.knowledgeModeMigration ?? (stored && Object.keys(stored).length > 0 && !stored.knowledgeMode ? migrateKnowledgeMode(stored, { mcp: healedMcp, plugins: healedPlugins }) : undefined),
     openaiCompatibleContextWindow: healContextWindow(stored?.openaiCompatibleContextWindow),

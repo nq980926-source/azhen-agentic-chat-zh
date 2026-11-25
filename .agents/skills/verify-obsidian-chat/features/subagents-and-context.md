@@ -45,8 +45,8 @@ await $(".agentic-chat-action-list").waitForExist();
 
 | entry point | source | proof | status |
 |---|---|---|---|
-| `/agent` with no argument (picker) | `src/ui/chat-view.ts:2073` | no committed check | `NONE` |
-| `/agent <name> <task>` | `src/ui/chat-view.ts:2060` | `test/command-dispatcher.test.ts:54` (unit only) | `partial` |
+| `/agent` with no argument (picker) | `src/ui/chat-view.ts:2074` | no committed check | `NONE` |
+| `/agent <name> <task>` | `src/ui/chat-view.ts:2061` | `test/command-dispatcher.test.ts:54` (unit only) | `partial` |
 | Model calls the `subagent` tool | `src/tools/subagent-tool.ts:111` | `test/subagents.test.ts:323` (unit only) | `partial` |
 | Built-in Explorer role | `src/agent/subagents.ts:34` | `test/subagent-runtime.test.ts:147` (unit only) | `partial` |
 | Parallel cap of ten and queueing | `src/tools/subagent-tool.ts:13` | `test/subagents.test.ts:505` (unit only) | `partial` |
@@ -56,15 +56,15 @@ await $(".agentic-chat-action-list").waitForExist();
 | Replay a stopped dispatch | `src/ui/assistant-bubble.ts:622` | `test/e2e/specs/subagent-replay.e2e.ts:128` | `covered` |
 | Replay a failed dispatch | `src/ui/assistant-bubble.ts:622` | `test/e2e/specs/subagent-replay.e2e.ts:146` | `covered` |
 | Subagent timeout behavior | `src/agent/subagent-runtime.ts:65` | `test/subagents.test.ts:428` (unit only) | `partial` |
-| Subagent timeout setting row | `src/settings.ts:2110` | no committed check | `NONE` |
+| Subagent timeout setting row | `src/settings.ts:2113` | no committed check | `NONE` |
 | Attachment budget: inline or path reference | `src/ui/attachments.ts:42` | `test/attachments.test.ts:17` (unit only) | `partial` |
 | Ignore-list withholding | `src/ui/attachments.ts:39` | `test/attachments.test.ts:37` (unit only) | `partial` |
-| Context chips order and removal | `src/ui/chat-view.ts:2481` | `test/context-chip-renderer.test.ts:85` (unit only) | `partial` |
+| Context chips order and removal | `src/ui/chat-view.ts:2482` | `test/context-chip-renderer.test.ts:85` (unit only) | `partial` |
 | Source chips and note open | `src/ui/assistant-bubble.ts:744` | `test/e2e/specs/beautifului-polish.e2e.ts:198` | `covered` |
 | `showFolderMenu()` | `src/ui/working-directory-workflow-controller.ts:22` | only a unit test calls it; no production caller | `unreachable` |
 | `attachFolderMenuItems()` | `src/ui/working-directory-workflow-controller.ts:48` | no caller in `src/` or `test/` | `unreachable` |
-| Context-window bar | `src/ui/chat-view.ts:815` | `test/e2e/specs/smoke.e2e.ts:179` (existence only) | `partial` |
-| Runtime date context in parent and subagent prompts | `src/agent/runtime-date-context.ts:129`; `src/agent/runtime-resource-state.ts:135`; `src/agent/subagent-runtime.ts:97` | `test/runtime-date-context.test.ts:138`; `test/subagent-runtime.test.ts:159` (unit only) | `partial` |
+| Context-window bar | `src/ui/chat-view.ts:816` | `test/e2e/specs/smoke.e2e.ts:179` (existence only) | `partial` |
+| Runtime date context in parent and subagent prompts | `src/agent/runtime-date-context.ts:129`; `src/agent/runtime-resource-state.ts:136`; `src/agent/subagent-runtime.ts:97` | `test/runtime-date-context.test.ts:138`; `test/subagent-runtime.test.ts:159` (unit only) | `partial` |
 
 ## Gotchas
 

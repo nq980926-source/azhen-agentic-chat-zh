@@ -40,6 +40,8 @@ export class Notice {
 }
 
 export class Component {}
+export class MarkdownRenderChild extends Component { constructor(public containerEl: HTMLElement) { super(); } }
+export class SecretComponent { constructor(_app: unknown, _el: unknown) {} setValue(_value: string) { return this; } onChange(_fn: unknown) { return this; } }
 export class ItemView extends Component {}
 export class Plugin extends Component {}
 export class PluginSettingTab {}

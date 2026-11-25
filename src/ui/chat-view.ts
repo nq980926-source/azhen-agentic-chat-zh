@@ -1,3 +1,4 @@
+import { sourceFromMessage } from "../photos/tool";
 import type { KnowledgeModeParticipant } from "../agent/knowledge-mode";
 import { ToolCallGroup } from "./tool-call-group";
 import {
@@ -3155,6 +3156,18 @@ export class ChatView extends ItemView {
             src: `data:${part.mimeType};base64,${part.data}`, alt: "用户发送的图片", loading: "lazy",
           } });
         }
+      }
+    }
+    if (message && this.plugin.photos) {
+      const service = this.service; const tab = this.activeTab;
+      const source = sourceFromMessage(message, `${service.getSessionInfo()?.id ?? service.getSessionToken()}:${message.timestamp ?? editIndex ?? "unknown"}`);
+      if (source) {
+        const save = el.createEl("button", { cls: "azhen-photo-save", text: "保存照片至 COS", attr: { type: "button" } });
+        save.addEventListener("click", event => {
+          event.preventDefault(); event.stopPropagation();
+          const token = service.getSessionToken();
+          void this.plugin.photos?.openSave(source, () => this.isLiveTab(tab) && service.getSessionToken() === token);
+        });
       }
     }
     el.createDiv({ cls: "agentic-chat-user-text", text });

@@ -1,3 +1,4 @@
+import { renderPhotoSettings } from "./photos/settings";
 import { ObsidianSecretStore, switchWebSearchProvider } from "./secrets/secret-store";
 import { App, ButtonComponent, Notice, Platform, PluginSettingTab, Setting, TFile, TFolder, ToggleComponent, type SettingDefinitionItem } from "obsidian";
 import type AgenticChatPlugin from "./main";
@@ -629,6 +630,8 @@ export class AgenticChatSettingTab extends PluginSettingTab {
             dropdown.setValue(this.plugin.settings.knowledgeMode);
           });
       });
+
+    renderPhotoSettings(containerEl, this.plugin);
 
     new Setting(containerEl)
       .setName(t("settings.permissionMode"))

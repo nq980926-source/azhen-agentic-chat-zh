@@ -1,3 +1,4 @@
+import { PhotoRuntime } from "./photos/runtime";
 import { KnowledgeModeTransition, type KnowledgeMode } from "./agent/knowledge-mode";
 import {PROGRESS_LANGUAGE, renderProgressBlock} from "./ui/progress-block";
 import {
@@ -47,6 +48,7 @@ declare const __AGENTIC_CHAT_ENABLE_E2E_STREAM__: boolean;
 
 export default class AgenticChatPlugin extends Plugin {
   readonly shortcutApiVersion = 1;
+  photos?: PhotoRuntime;
   private shortcutBusy = false;
   private shortcutDisposed = false;
   private readonly shortcutRequests = new Map<string, Promise<NativeShortcutResult>>();
@@ -66,6 +68,7 @@ export default class AgenticChatPlugin extends Plugin {
     this.register(() => { this.shortcutDisposed=true; this.shortcutRequests.clear(); });
     this.secretStore = new ObsidianSecretStore(this.app);
     await this.loadSettings();
+    try { this.photos = new PhotoRuntime(this); } catch { new Notice("照片功能暂不可用，普通聊天不受影响。"); }
     this.registerMarkdownCodeBlockProcessor(PROGRESS_LANGUAGE, renderProgressBlock);
     // Scope the cross-window lease to this vault. Desktop uses the absolute
     // base path, which is identical in every window and avoids a first-load id
@@ -165,6 +168,7 @@ export default class AgenticChatPlugin extends Plugin {
     const sessionManager = ObsidianSessionManager.forPlugin(this.app, this);
     return new AgentService({
       app: this.app,
+      photoSave: (source, signal, valid) => { if (!this.photos) throw new Error("照片功能不可用"); return this.photos.save(source, signal, valid); },
       getSettings: () => this.settings,
       sessionManager,
       confirmToolCall: options.confirmToolCall ?? ((request, signal) => this.confirmToolCall(request, signal)),
@@ -325,6 +329,7 @@ export default class AgenticChatPlugin extends Plugin {
   readonly knowledgeTransition = new KnowledgeModeTransition();
 
   async requestKnowledgeModeChange(next: KnowledgeMode): Promise<boolean> {
+    if (this.photos?.active) { new Notice("照片任务正在批准或执行，请先完成或取消。"); return false; }
     const participants = this.app.workspace.getLeavesOfType(VIEW_TYPE_AGENT_CHAT)
       .flatMap(leaf => leaf.view instanceof ChatView ? leaf.view.knowledgeParticipants() : []);
     try {

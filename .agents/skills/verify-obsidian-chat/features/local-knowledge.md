@@ -21,8 +21,8 @@ model credentials or production Knowledge/Memory endpoints.
 
 | entry point | source | proof | status |
 |---|---|---|---|
-| Knowledge settings dropdown | `src/settings.ts:621` | `test/e2e/specs/local-knowledge.e2e.ts:10` | `covered` |
-| All-tab transition / send lock | `src/main.ts:327` | `test/local-knowledge-isolation.test.ts:112` | `partial` |
+| Knowledge settings dropdown | `src/settings.ts:622` | `test/e2e/specs/local-knowledge.e2e.ts:10` | `covered` |
+| All-tab transition / send lock | `src/main.ts:331` | `test/local-knowledge-isolation.test.ts:112` | `partial` |
 | Cloud tools, old calls, finance and Web isolation | `src/agent/knowledge-mode.ts:24` | `test/local-knowledge-isolation.test.ts:30` | `partial` |
 | Current-device atomic Vault writes | `src/tools/vault-tools.ts:367` | `test/local-knowledge-files.test.ts:20` | `partial` |
 | Native Obsidian Vault conflict integration | `src/agent/runtime-resources.ts:256` | `test/e2e/specs/local-knowledge.e2e.ts:40` | `covered` |

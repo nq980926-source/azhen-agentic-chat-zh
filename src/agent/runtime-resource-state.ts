@@ -39,6 +39,7 @@ export interface BuildParentToolsOptions {
 
 export interface AgentRuntimeResourceStateOptions {
   app: App;
+  photoTools?: () => AgentTool[];
   getSettings: () => AgenticChatSettings;
   readMemo: ReadMemo;
   webFetch: WebFetcher;
@@ -163,6 +164,7 @@ export class AgentRuntimeResourceState {
       settings,
       getSettings: this.options.getSettings,
       resources: this.resources,
+      photoTools: this.options.photoTools?.(),
       readMemo: this.options.readMemo,
       webFetch: this.options.webFetch,
       artifactStore: this.options.artifactStore,
