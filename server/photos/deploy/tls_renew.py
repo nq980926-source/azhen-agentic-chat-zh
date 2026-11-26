@@ -1,8 +1,10 @@
 """Reuse the existing IP certificate and ACME account; never print certificate keys."""
 import base64,pathlib,re,socket,ssl,stat,subprocess
+import existing_tls
 P=pathlib.Path
 IP='106.55.92.40'
 CONF=P('/etc/nginx/conf.d/azhen-mcp-access.conf')
+REUSE_FILES=()
 def need(ok,code):
  if not ok:raise RuntimeError(code)
 def run(args,timeout=600):
@@ -20,6 +22,7 @@ def safe_hook(value):
  value=' '.join(value.split())
  return bool(re.fullmatch(r'(?:nginx -t && )?(?:systemctl reload nginx(?:\.service)?|nginx -s reload)',value))
 def detect():
+ global REUSE_FILES
  text=safe(CONF).read_text()
  names=re.findall(r'(?m)^\s*ssl_certificate\s+["\']?(/[^\s;"\']+)["\']?\s*;',text)
  candidates=[]
@@ -28,6 +31,9 @@ def detect():
   if run(['openssl','x509','-in',str(safe(path)),'-noout','-checkip',IP],10).returncode==0:candidates.append(path)
  need(len(candidates)==1,'TLS_CERTIFICATE_NOT_UNIQUE')
  certificate=candidates[0]
+ if (existing_tls.ROOT/'renewal/azhen-mcp-ip.conf').is_file():
+  REUSE_FILES=existing_tls.validate(safe,run,need,safe_hook,certificate)
+  return certificate,None
  if str(certificate).startswith('/etc/letsencrypt/live/'):
   certname=certificate.parent.name
   need(re.fullmatch('[A-Za-z0-9.-]+',certname),'TLS_UNSAFE_CERTIFICATE_NAME')
@@ -59,7 +65,7 @@ def detect():
  raise RuntimeError('TLS_EXISTING_ACME_CONFIGURATION_REQUIRED')
 def ensure():
  certificate,command=detect()
- if run(['openssl','x509','-in',str(certificate),'-noout','-checkend','172800'],10).returncode!=0:
+ if command is not None and run(['openssl','x509','-in',str(certificate),'-noout','-checkend','172800'],10).returncode!=0:
   need(run(command).returncode==0,'TLS_RENEWAL_FAILED')
   need(run(['nginx','-t'],30).returncode==0,'TLS_NGINX_VALIDATION_FAILED')
   need(run(['systemctl','reload','nginx'],30).returncode==0,'TLS_RELOAD_FAILED')

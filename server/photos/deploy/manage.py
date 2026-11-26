@@ -4,16 +4,14 @@ import tls_renew
 from nginx_parser import parse
 P=pathlib.Path
 VERSION='0.51.28-rc.1'
+SERVICE_BUILD='0.51.28-rc.1-tlsfix.1'
 SOURCE=P(__file__).resolve().parents[1]
-RELEASE=P('/opt/azhen-photo-auth/releases')/VERSION
+RELEASE=P('/opt/azhen-photo-auth/releases')/SERVICE_BUILD
 CONFIG=P('/etc/azhen-photo-auth/config.json')
 NGINX=P('/etc/nginx/conf.d/azhen-mcp-access.conf')
 DROP=P('/etc/systemd/system/azhen-photo-auth.service.d/50-photos-production.conf')
 BASE=P('/var/backups/azhen-photos-production')
 UNIT='azhen-photo-auth.service'
-TIMER='azhen-photos-tls.timer'
-TLS_SERVICE=P('/etc/systemd/system/azhen-photos-tls.service')
-TLS_TIMER=P('/etc/systemd/system')/TIMER
 BACKUP_TIMER='azhen-photos-backup.timer'
 BACKUP_SERVICE=P('/etc/systemd/system/azhen-photos-backup.service')
 BACKUP_TIMER_FILE=P('/etc/systemd/system')/BACKUP_TIMER
@@ -97,7 +95,7 @@ def public_checks():
 def rollback(directory):
  manifest=json.loads(raw(directory/'manifest.json'))
  run(['systemctl','stop',UNIT],90)
- for timer in (TIMER,BACKUP_TIMER):subprocess.run(['systemctl','disable','--now',timer],capture_output=True,timeout=60)
+ for timer in (BACKUP_TIMER,):subprocess.run(['systemctl','disable','--now',timer],capture_output=True,timeout=60)
  for name in manifest['files']:
   row=manifest['files'][name];path=P(row['path'])
   if path.exists():need(sha(raw(path)) in (row.get('before'),row.get('after')),'EXTERNAL_CHANGE_PREVENTS_ROLLBACK')
@@ -114,7 +112,8 @@ def rollback(directory):
   if previous['active']:run(['systemctl','start',timer])
  print('PHOTO_PRODUCTION_ROLLED_BACK_DATABASE_AND_OBJECTS_PRESERVED')
 def apply():
- original,old=config();tls_renew.detect()
+ original,old=config();certificate,renew_command=tls_renew.detect()
+ need(renew_command is None,'TLS_EXISTING_CUSTOM_TIMER_REQUIRED')
  run(['systemctl','is-active','--quiet',UNIT]);run(['nginx','-t'])
  need(run(['systemctl','show',UNIT,'--property=User','--value'])=='azhen-photo-auth','PHOTO_SERVICE_USER_CHANGED')
  owner=pwd.getpwnam('azhen-photo-auth')
@@ -147,12 +146,14 @@ def apply():
  proposed=dict(old);proposed.update(json.loads((SOURCE/'deploy/production-config.patch.json').read_text()))
  candidate=(json.dumps(proposed,indent=2)+'\n').encode()
  dropin=('[Service]\nWorkingDirectory='+str(RELEASE)+'\nExecStart=\nExecStart='+python+' -m photo_auth.production --config '+str(CONFIG)+'\nRestart=on-failure\nRestartSec=5\n').encode()
- tls_service=('[Unit]\nDescription=Azhen existing photo TLS renewal guard\nAfter=network-online.target\n[Service]\nType=oneshot\nExecStart=/usr/bin/python3 '+str(RELEASE/'deploy/tls_renew.py')+'\nRestart=on-failure\nRestartSec=30min\n').encode()
- tls_timer=b'[Unit]\nDescription=Azhen existing photo TLS renewal guard\n[Timer]\nOnBootSec=10min\nOnUnitActiveSec=12h\nRandomizedDelaySec=5min\n[Install]\nWantedBy=timers.target\n'
  backup_service=('[Unit]\nDescription=Azhen private photo metadata backup\n[Service]\nType=oneshot\nUser=azhen-photo-auth\nGroup=azhen-photo-auth\nWorkingDirectory='+str(RELEASE)+'\nExecStart='+python+' -m photo_auth.backup --config '+str(CONFIG)+'\nUMask=0077\n').encode()
  backup_timer=b'[Unit]\nDescription=Azhen private photo metadata backup\n[Timer]\nOnCalendar=daily\nPersistent=true\n[Install]\nWantedBy=timers.target\n'
- updates={'config':(CONFIG,candidate),'nginx':(NGINX,cors(raw(NGINX))),'dropin':(DROP,dropin),'tls_service':(TLS_SERVICE,tls_service),'tls_timer':(TLS_TIMER,tls_timer),'backup_service':(BACKUP_SERVICE,backup_service),'backup_timer':(BACKUP_TIMER_FILE,backup_timer)}
- manifest={'version':VERSION,'previously_enabled':subprocess.run(['systemctl','is-enabled','--quiet',UNIT],capture_output=True).returncode==0,'timers':{timer:{'enabled':subprocess.run(['systemctl','is-enabled','--quiet',timer],capture_output=True).returncode==0,'active':subprocess.run(['systemctl','is-active','--quiet',timer],capture_output=True).returncode==0} for timer in (TIMER,BACKUP_TIMER)},'files':{}}
+ updates={'config':(CONFIG,candidate),'nginx':(NGINX,cors(raw(NGINX))),'dropin':(DROP,dropin),'backup_service':(BACKUP_SERVICE,backup_service),'backup_timer':(BACKUP_TIMER_FILE,backup_timer)}
+ manifest={'version':VERSION,'service_build':SERVICE_BUILD,'previously_enabled':subprocess.run(['systemctl','is-enabled','--quiet',UNIT],capture_output=True).returncode==0,'timers':{timer:{'enabled':subprocess.run(['systemctl','is-enabled','--quiet',timer],capture_output=True).returncode==0,'active':subprocess.run(['systemctl','is-active','--quiet',timer],capture_output=True).returncode==0} for timer in (BACKUP_TIMER,)},'files':{}}
+ manifest['existing_tls_reference']=[]
+ for index,path in enumerate(tls_renew.REUSE_FILES):
+  contents=path.read_bytes();atomic(directory/('existing-tls-'+str(index)),contents)
+  manifest['existing_tls_reference'].append({'path':str(path),'sha256':sha(contents)})
  for name,(path,value) in updates.items():
   before=raw(path) if path.exists() else None
   if before is not None:atomic(directory/name,before)
@@ -178,9 +179,9 @@ def apply():
   run(['runuser','-u','azhen-photo-auth','--',python,'-m','photo_auth.production','--config',str(CONFIG),'--check-config'],cwd=RELEASE)
   run(['systemctl','restart',UNIT],90);healthy()
   need(raw(CONFIG)==candidate,'CONFIG_CHANGED_AFTER_RESTART')
-  run(['systemctl','reload','nginx']);public_checks();run(['systemctl','enable',UNIT,TIMER,BACKUP_TIMER]);run(['systemctl','start',TIMER,BACKUP_TIMER])
+  run(['systemctl','reload','nginx']);public_checks();run(['systemctl','enable',UNIT,BACKUP_TIMER]);run(['systemctl','start',BACKUP_TIMER])
   run(['systemctl','start','azhen-photos-backup.service'])
-  run(['systemctl','is-active','--quiet',UNIT]);run(['systemctl','is-active','--quiet',TIMER])
+  run(['systemctl','is-active','--quiet',UNIT]);run(['systemctl','is-active','--quiet','azhen-mcp-cert-renew.timer'])
   run(['systemctl','is-active','--quiet',BACKUP_TIMER]);need(raw(CONFIG)==candidate,'CONFIG_CHANGED_AFTER_DEPLOY')
   print('PHOTO_PRODUCTION_READY_NO_OBJECT_REQUESTS')
   print('DEVICE_PAIRING_READY_RUN_PAIR_ONCE_PER_DEVICE')
