@@ -8,6 +8,7 @@ import type { FileCheckpoint } from "../agent/file-checkpoints";
 import type { UndoEntry } from "../agent/undo";
 import type { PlanTrackerState } from "../agent/plan-tracker";
 import { normalizeFolderPath } from "../vault/path";
+import { SessionImageStore } from "./image-store";
 import {
   type ActionAuditSessionEntry,
   type FileCheckpointSessionEntry,
@@ -71,6 +72,7 @@ export class ObsidianSessionManager {
   private readonly adapter: DataAdapter;
   private readonly sessionDir: string;
   private readonly cwd: string;
+  private readonly images: SessionImageStore;
   private sessionFile: string | null = null;
   private entries: SessionEntry[] = [];
   private leafId: string | null = null;
@@ -85,6 +87,7 @@ export class ObsidianSessionManager {
     this.adapter = adapter;
     this.sessionDir = normalizeFolderPath(sessionDir, { allowPluginInternals: true });
     this.cwd = cwd;
+    this.images = new SessionImageStore(adapter, `${this.sessionDir}/media`);
   }
 
   static forPlugin(app: App, plugin: Plugin): ObsidianSessionManager {
@@ -122,8 +125,8 @@ export class ObsidianSessionManager {
 
   async loadSession(path: string, options: LoadSessionOptions = {}): Promise<SessionInfo> {
     const sessionPath = normalizeFolderPath(path, { allowPluginInternals: true });
-    const content = await this.adapter.read(sessionPath);
-    const entries = parseSessionEntries(content);
+    const content = await this.readBounded(sessionPath);
+    const entries = await this.images.decode(parseSessionEntries(content));
     if (entries[0]?.type !== "session") {
       throw new Error("Session file is missing a session header.");
     }
@@ -145,7 +148,8 @@ export class ObsidianSessionManager {
     await this.ensureSessionDirectory();
     const listing = await this.adapter.list(this.sessionDir);
     const sessionFiles = listing.files.filter((path) => path.endsWith(".jsonl"));
-    const sessions = await Promise.all(sessionFiles.map((path) => this.readSessionInfo(path)));
+    const sessions: Array<SessionFileInfo | null> = [];
+    for (const path of sessionFiles) sessions.push(await this.readSessionInfo(path));
     return sessions
       .filter((session): session is SessionFileInfo => session !== null)
       .sort((left, right) => right.modifiedTime - left.modifiedTime)
@@ -171,7 +175,7 @@ export class ObsidianSessionManager {
     const ids = new Set<string>();
     for (const path of listing.files.filter((file) => file.endsWith(".jsonl"))) {
       try {
-        const entries = parseSessionEntries(await this.adapter.read(path));
+        const entries = parseSessionEntries(await this.readBounded(path));
         const messages = entries
           .filter((entry): entry is MessageSessionEntry => entry.type === "message")
           .map((entry) => entry.message);
@@ -265,7 +269,7 @@ export class ObsidianSessionManager {
       await this.appendSessionName(trimmed);
       return;
     }
-    const content = await this.adapter.read(sessionPath);
+    const content = await this.readBounded(sessionPath);
     const entries = parseSessionEntries(content);
     if (entries[0]?.type !== "session") throw new Error("Session file is missing a session header.");
     const entry: SessionInfoEntry = {
@@ -275,7 +279,7 @@ export class ObsidianSessionManager {
       timestamp: new Date().toISOString(),
       name: trimmed,
     };
-    await this.adapter.append(sessionPath, `${JSON.stringify(entry)}\n`);
+    await this.appendBounded(sessionPath, `${JSON.stringify(entry)}\n`);
   }
 
   /**
@@ -356,7 +360,9 @@ export class ObsidianSessionManager {
         state: planTracker,
       });
     }
-    await this.adapter.write(sessionFile, serializeSessionEntries(rebuilt));
+    const persisted = serializeSessionEntries(await this.images.encode(rebuilt));
+    if (persisted.length > 2 * 1024 * 1024) throw new Error("聊天记录过长，请新建会话；原记录保留。");
+    await this.adapter.write(sessionFile, persisted);
     if (this.sessionFile !== sessionFile || this.sessionGeneration !== generation) {
       throw new Error("Session changed while rewriting the transcript.");
     }
@@ -410,7 +416,8 @@ export class ObsidianSessionManager {
     const generation = this.sessionGeneration;
     // Write to disk first: if the append fails, the in-memory entries/leafId stay
     // consistent with what's actually persisted instead of drifting ahead of it.
-    await this.adapter.append(sessionFile, `${JSON.stringify(entry)}\n`);
+    const persisted = `${JSON.stringify(await this.images.encode(entry))}\n`;
+    await this.appendBounded(sessionFile, persisted);
     // A session swap can land while the append is in flight. The entry belongs
     // to the file we captured above; never splice it into the new session's
     // in-memory chain or leaf pointer.
@@ -432,7 +439,8 @@ export class ObsidianSessionManager {
 
   private async readSessionInfo(path: string): Promise<SessionFileInfo | null> {
     try {
-      const [content, stat] = await Promise.all([this.adapter.read(path), this.adapter.stat(path)]);
+      const content = await this.readBounded(path);
+      const stat = await this.adapter.stat(path);
       const entries = parseSessionEntries(content);
       if (entries[0]?.type !== "session") return null;
       const modifiedTime = getSessionModifiedTime(entries, stat?.mtime ?? Date.now());
@@ -440,6 +448,22 @@ export class ObsidianSessionManager {
     } catch {
       return null;
     }
+  }
+
+  private async readBounded(path: string): Promise<string> {
+    const stat = await this.adapter.stat(path);
+    if (stat && stat.size > 4 * 1024 * 1024) {
+      throw new Error("旧会话超过手机安全读取大小，需要迁移图片存储；原文件保留。");
+    }
+    return this.adapter.read(path);
+  }
+
+  private async appendBounded(path: string, text: string): Promise<void> {
+    const bytes = new TextEncoder().encode(text).byteLength;
+    if (bytes > 1024 * 1024) throw new Error("单条聊天内容过长，请拆分发送；原记录保留。");
+    const stat = await this.adapter.stat(path);
+    if (!stat || stat.size + bytes > 4 * 1024 * 1024) throw new Error("本会话文本已达到安全容量，请新建会话；原记录保留。");
+    await this.adapter.append(path, text);
   }
 }
 

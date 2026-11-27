@@ -1,4 +1,4 @@
-import { requestUrl } from "obsidian";
+import { Platform, requestUrl } from "obsidian";
 import {
   createAssistantMessageEventStream,
   getCurrentTools,
@@ -202,9 +202,18 @@ export function obsidianOpenAICompletionsApi(): ProviderStreams {
 }
 
 const defaultOpenAICompatibleRequester: OpenAICompatibleRequester = (request) => {
+  assertMobileRequestBody(request.body, Platform.isMobile);
   const { signal: _signal, ...obsidianRequest } = request;
   return requestUrl(obsidianRequest);
 };
+
+/** Reject before entering Android's JSON bridge; never compress or silently drop images. */
+export function assertMobileRequestBody(body: string | undefined, mobile: boolean): void {
+  const limit = 16 * 1024 * 1024;
+  if (mobile && body && (body.length > limit || new TextEncoder().encode(body).byteLength > limit)) {
+    throw new Error("本次图片及聊天上下文过大，请分批发送图片或新建会话后识别。原图不会压缩，原会话保留。");
+  }
+}
 
 async function requestCompletionWithRetries(
   requester: OpenAICompatibleRequester,

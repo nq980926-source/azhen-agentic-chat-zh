@@ -1,5 +1,11 @@
 # Sessions and tabs
 
+Android image-history recovery (2026-11-27): `src/session/image-store.ts` stores
+lossless deduplicated images in bounded local chunks; session-manager bounds
+legacy reads and serializes history enumeration. Proof: `test/session-images.test.ts`
+and `test/e2e/specs/image-session-storage.e2e.ts` (real Obsidian mobile viewport,
+not Android hardware or live model OCR). See `docs/releases/0.51.29-imagefix-test.1.md`.
+
 ## Sub-features
 
 - Up to three independent tabs, each with its own session and agent service.

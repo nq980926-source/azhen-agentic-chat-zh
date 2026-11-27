@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { ObsidianSessionManager } from "../src/session/session-manager";
 import { MemoryAdapter } from "./helpers/memory-adapter";
+import { SessionImageStore } from "../src/session/image-store";
+import { assertMobileRequestBody } from "../src/llm/openai-compatible-request";
 
 const defaults = { provider: "openrouter", modelId: "fixture/vision", thinkingLevel: "off" as const };
 const data = "QUJD".repeat(800_000);
@@ -10,6 +12,35 @@ function message(): AgentMessage {
 }
 
 describe("lossless image session persistence on the mobile bridge", () => {
+  it("rejects oversized mobile network requests before the native call without silently resizing", () => {
+    expect(() => assertMobileRequestBody("a".repeat(16 * 1024 * 1024 + 1), true)).toThrow("分批");
+    expect(() => assertMobileRequestBody("a".repeat(16 * 1024 * 1024), true)).not.toThrow();
+    expect(() => assertMobileRequestBody("a".repeat(17 * 1024 * 1024), false)).not.toThrow();
+  });
+
+  it("deduplicates repeated images and detects a damaged chunk instead of losing image data silently", async () => {
+    const adapter = new MemoryAdapter();
+    const store = new SessionImageStore(adapter.asDataAdapter(), "sessions/media");
+    const encoded = await store.encode(message());
+    const count = adapter.files.size;
+    expect(await store.encode(message())).toEqual(encoded);
+    expect(adapter.files.size).toBe(count);
+    const chunk = [...adapter.files.keys()].find(path => path.endsWith(".0.b64"))!;
+    adapter.files.set(chunk, "AAAA");
+    await expect(store.decode(encoded)).rejects.toThrow("分块不完整");
+  });
+
+  it("leaves the original transcript unchanged when an image cannot be saved", async () => {
+    const adapter = new MemoryAdapter();
+    const manager = new ObsidianSessionManager(adapter.asDataAdapter(), "sessions", "vault:test");
+    const info = await manager.createSession(defaults);
+    const before = adapter.files.get(info.path);
+    const write = adapter.write.bind(adapter);
+    adapter.write = async (path, content) => { if (path.endsWith(".b64")) throw new Error("disk full"); return write(path, content); };
+    await expect(manager.appendMessage(message())).rejects.toThrow("disk full");
+    expect(adapter.files.get(info.path)).toBe(before);
+    expect(manager.buildSessionContext().messages).toEqual([]);
+  });
   it("keeps every native write bounded and restores original image data after restart", async () => {
     const adapter = new MemoryAdapter();
     const max = 1024 * 1024;
